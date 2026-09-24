@@ -22,7 +22,8 @@
     drawer: null,
     filters: { q: '', status: '', campaign: '' },
     sort: { col: 'priority_score', dir: -1 },
-    bulkRows: []
+    bulkRows: [],
+    findCamp: ''
   };
 
   const theme = store.get('theme', 'system');
@@ -209,15 +210,36 @@
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'contacts', label: 'Contacts' },
     { id: 'add', label: 'Add people' },
+    { id: 'guide', label: 'How it works' },
     { id: 'settings', label: 'Settings' }
   ];
+  try {
+    document.head.insertAdjacentHTML('beforeend', '<style>' +
+      '.onboard{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:var(--radius);padding:18px;display:flex;flex-direction:column;gap:12px}' +
+      '.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px}.steps li{padding-left:4px}' +
+      '.guide{display:flex;flex-direction:column;gap:16px;max-width:820px}.guide p{margin:0;max-width:68ch}.guide .panel{display:flex;flex-direction:column;gap:10px}' +
+      '.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none;font-size:12.5px;font-weight:600}.chip:hover{border-color:#0a66c2;color:#0a66c2}' +
+      '.hint-line{font-size:12.5px;color:var(--ink-3);margin:-4px 0 0}' +
+      '@media (max-width:760px){.mobile-nav{grid-template-columns:repeat(6,1fr)}}' +
+      '</style>');
+  } catch (e) { /* styles are optional */ }
+  const liSearch = (q) => 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(q);
+  function onboardCard() {
+    return '<div class="onboard"><h2>Your list is empty. Here is how to start</h2>' +
+      '<p class="muted" style="margin:0">This app does not search LinkedIn for you. It keeps track of the people you choose to add, scores them with AI, drafts your notes and reminds you when to follow up.</p>' +
+      '<ol class="steps"><li><b>Find people on LinkedIn yourself.</b> Use the "Find people on LinkedIn" links on the Add people page; they open LinkedIn search in a new tab using your campaign keywords.</li>' +
+      '<li><b>Add each person here</b> with their LinkedIn URL and a few lines from their profile. Or paste a list of up to 200.</li>' +
+      '<li><b>Wait about a minute.</b> The AI scores them and writes three connection notes. Press Refresh; they appear under Today and Contacts.</li>' +
+      '<li><b>Send the request on LinkedIn yourself</b>, then tap "Sent with note 1/2/3" so the app can remind you later.</li></ol>' +
+      '<div class="actions"><button class="btn primary" type="button" data-nav="add">Add people</button><button class="btn" type="button" data-nav="guide">Read how it works</button></div></div>';
+  }
   function renderChrome() {
     const todayCount = S.data ? queueList().queue.length + checksList().length + draftsList().length : 0;
     const navHtml = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '><span>' + v.label + '</span>' +
       (v.id === 'today' && todayCount ? '<span class="count num">' + todayCount + '</span>' : '') + '</button>').join('');
     $('#nav').innerHTML = navHtml;
     $('#mobile-nav').innerHTML = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
-      (v.id === 'add' ? 'Add' : v.label) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
+      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : v.label)) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
 
     const dot = $('#conn-dot'); const txt = $('#conn-text');
     dot.className = 'dot ' + (S.mode === 'live' ? 'live' : 'demo');
@@ -240,6 +262,7 @@
     const checks = checksList(); const drafts = draftsList(); const due = dueNoDraft();
     const dateStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
     let h = topbar('Today', dateStr + ' · ' + queue.length + ' to connect · ' + checks.length + ' to check · ' + drafts.length + ' follow-ups ready');
+    if (!S.data.contacts.length) return h + onboardCard();
 
     h += '<section class="section"><div class="section-head"><h2>Connect on LinkedIn</h2><span class="hint">Open the profile, send the request yourself, then log which note you used.' +
       (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : '') + '</span></div>';
@@ -395,16 +418,20 @@
     const campOpts = '<option value="">All campaigns</option>' + campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (f.campaign === c.campaign_code ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('');
     const th = (key, label, r) => '<th class="sortable' + (r ? ' r' : '') + '" data-sort="' + key + '">' + label + (col === key ? (dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
 
-    let h = topbar('Contacts', list.length + ' of ' + S.data.contacts.length + ' people');
-    h += '<div class="filters"><input id="f-q" type="search" placeholder="Search name, organisation, email, city" value="' + esc(f.q) + '" aria-label="Search contacts">' +
-      '<select id="f-status" aria-label="Filter by stage">' + statusOpts + '</select><select id="f-campaign" aria-label="Filter by campaign">' + campOpts + '</select></div>';
+    let h = topbar('Contacts', list.length + ' of ' + S.data.contacts.length + ' people in your list', '<button class="btn primary" type="button" data-nav="add">Add people</button>');
+    if (!S.data.contacts.length) return h + onboardCard();
+    h += '<div class="filters"><input id="f-q" type="search" placeholder="Search people in your list: name, organisation, email, city" value="' + esc(f.q) + '" aria-label="Search contacts">' +
+      '<select id="f-status" aria-label="Filter by stage">' + statusOpts + '</select><select id="f-campaign" aria-label="Filter by campaign">' + campOpts + '</select></div>' +
+      '<p class="hint-line">This search looks only at people you have already added. To find someone new, search LinkedIn, then add them.</p>';
     h += '<div class="panel table-wrap" style="padding:0"><table><thead><tr>' + th('full_name', 'Person') + th('campaign_code', 'Campaign') + th('status', 'Stage') +
       th('priority_score', 'Score', true) + th('next_followup_date', 'Next touch') + th('last_contact_date', 'Last contact') + '</tr></thead><tbody>';
     h += list.map((c) => '<tr class="click" data-open="' + esc(c.person_key) + '" tabindex="0"><td><b>' + esc(c.full_name) + '</b><div class="faint">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</div></td>' +
       '<td>' + esc(campaignName(c.campaign_code)) + '</td><td>' + statusPill(c.status) + (isDnc(c) ? '' : '') + '</td><td class="r"><span class="pill ' + esc(c.priority || 'C') + '">' + esc(c.priority_score) + '</span></td>' +
       '<td class="num">' + (c.next_followup_date ? fmtDate(c.next_followup_date) + ' <span class="faint">' + relDays(c.next_followup_date) + '</span>' : '<span class="faint">—</span>') + '</td>' +
       '<td class="num">' + (c.last_contact_date ? fmtDate(c.last_contact_date) : '<span class="faint">—</span>') + '</td></tr>').join('');
-    if (!list.length) h += '<tr><td colspan="6"><div class="empty" style="border:0">No contacts match these filters.</div></td></tr>';
+    if (!list.length) h += '<tr><td colspan="6"><div class="empty" style="border:0">Nobody in your list matches these filters.' +
+      (f.q ? '<div class="actions" style="justify-content:center;margin-top:10px"><a class="btn sm li" target="_blank" rel="noopener" href="' + esc(liSearch(f.q)) + '">Search LinkedIn for "' + esc(f.q) + '"</a><button class="btn sm" type="button" data-nav="add">Add a person</button></div>' : '') +
+      '</div></td></tr>';
     h += '</tbody></table></div>';
     return h;
   }
@@ -485,8 +512,19 @@
   const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes'];
   function renderAdd() {
     const campOpts = campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '">' + esc(c.campaign_name) + '</option>').join('');
-    let h = topbar('Add people', 'After you have looked at someone\'s LinkedIn profile, add them here. The AI scores them and drafts three connection notes within a minute.');
-    h += '<div class="grid-2"><form class="panel section" id="add-form"><h2>One person</h2><div class="form-grid">' +
+    let h = topbar('Add people', 'Step 1: find someone on LinkedIn. Step 2: add them here. The AI scores them and drafts three connection notes within about a minute.');
+    const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
+    const terms = String(fc.keywords || fc.campaign_name || '').split(',').concat(String(fc.target_profile || '').split(','))
+      .map((t) => t.trim()).filter((t) => t && t.length < 60);
+    const uniq = terms.filter((t, i) => terms.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i).slice(0, 12);
+    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Find people on LinkedIn</h2><span class="faint">opens LinkedIn search in a new tab</span></div>' +
+      '<p class="muted" style="margin:0">LinkedIn does not allow tools to search or scrape it, so you do the searching. Pick a campaign, tap a search, open promising profiles, then copy their URL and a few lines from their profile into the form below.</p>' +
+      '<div class="form-grid"><label class="field" for="find-camp">Campaign<select id="find-camp">' +
+      campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === fc.campaign_code ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</select></label>' +
+      '<label class="field" for="find-q">Your own search<input id="find-q" type="search" placeholder="e.g. medical tourism professor Odisha"></label></div>' +
+      '<div class="chips">' + uniq.map((t) => '<a class="chip" target="_blank" rel="noopener" href="' + esc(liSearch(t)) + '">' + esc(t) + '</a>').join('') +
+      '<a class="btn sm li" id="find-go" target="_blank" rel="noopener" href="' + esc(liSearch(uniq[0] || '')) + '">Search LinkedIn</a></div></div>';
+    h += '<div class="grid-2"><form class="panel section" id="add-form"><h2>Add one person</h2><div class="form-grid">' +
       '<label class="field" for="a-name">Full name<input id="a-name" required placeholder="Dr. Priya Sharma"></label>' +
       '<label class="field" for="a-li">LinkedIn profile URL<input id="a-li" required placeholder="https://www.linkedin.com/in/…"></label>' +
       '<label class="field" for="a-title">Job title<input id="a-title" placeholder="Associate Professor"></label>' +
@@ -543,6 +581,49 @@
     } catch (e) { toast(e.message, true); return false; } finally { if (btn) btn.disabled = false; }
   }
 
+  // ---------- GUIDE ----------
+  function renderGuide() {
+    const stageRows = [
+      ['Ready to connect', 'Added and scored well by the AI. Waiting for you to send a LinkedIn request.'],
+      ['Following', 'You followed them first instead of connecting. You get a reminder after 14 days.'],
+      ['Request sent', 'You sent a connection request. After 10 days the app asks whether they accepted.'],
+      ['Connected', 'They accepted. A thank-you follow-up draft is written 3 days later.'],
+      ['First conversation', 'They replied with a polite, low-intent message.'],
+      ['Engaged', 'They are interested or asked for details.'],
+      ['Opportunity', 'They have a clear need or want a call. Flagged [OPPORTUNITY] in your inbox.'],
+      ['Nurture', 'Connected, three follow-ups done. A light check-in every 30 to 60 days.'],
+      ['Not accepted / Declined / Not relevant', 'Parked. They drop out of every queue.'],
+      ['Do not contact', 'They asked not to be contacted, or you chose this. Never shown again.']
+    ].map((r) => '<tr><td style="white-space:nowrap"><b>' + r[0] + '</b></td><td>' + r[1] + '</td></tr>').join('');
+    let h = topbar('How it works', 'A relationship tracker for LinkedIn. You do the talking; the app remembers, scores, drafts and reminds.');
+    h += '<div class="guide">' +
+      '<div class="panel"><h2>What this app does, and what it does not do</h2>' +
+      '<p><b>It does not search, scrape or message on LinkedIn.</b> LinkedIn forbids automation and can restrict accounts that use it. So finding people and clicking Connect or Send stays with you.</p>' +
+      '<p><b>It does everything around that:</b> keeps your list of people, scores each person for fit, writes three connection notes, tells you each morning who to contact, reminds you to check whether they accepted, drafts follow-ups at the right time, and reads their replies to suggest your answer.</p></div>' +
+      '<div class="panel"><h2>Your routine, in order</h2><ol class="steps">' +
+      '<li><b>Find people.</b> Go to <a href="#add" data-nav="add">Add people</a>, choose a campaign and tap a search. LinkedIn opens in a new tab. Open a profile that looks right.</li>' +
+      '<li><b>Add them.</b> Copy their profile URL, name, title and organisation into the Add form. Paste a few lines from their headline, About section or a recent post into Profile notes; the notes get much better with this. To add many at once, paste rows from Excel or Google Sheets.</li>' +
+      '<li><b>Let the AI qualify them.</b> Within about a minute each person gets four scores (relevance, relationship potential, contact data, timing), a "why this person" line and three connection notes under 200 characters. Press Refresh to see them. Low scorers are marked Not relevant automatically.</li>' +
+      '<li><b>Connect each morning.</b> Open <a href="#today" data-nav="today">Today</a> (or the 8:30 email). For each person: Open LinkedIn, copy a note, send the request on LinkedIn, then tap "Sent with note 1/2/3".</li>' +
+      '<li><b>Check acceptances.</b> Ten days later the person appears under "Did they accept?". Tap Accepted, Not yet, or Drop.</li>' +
+      '<li><b>Follow up.</b> Once connected, a follow-up draft appears under "Follow-ups ready" (and in the 9:00 email). Edit it, send it on LinkedIn, then tap "Sent on LinkedIn". For email, "Create Gmail draft" puts it in your Gmail drafts to review and send.</li>' +
+      '<li><b>Log replies.</b> When someone answers, open them in <a href="#contacts" data-nav="contacts">Contacts</a> and paste their message into "Log their reply". The AI classifies it, moves them to the right stage and emails you a suggested reply.</li></ol></div>' +
+      '<div class="panel"><h2>Stages</h2><div class="table-wrap"><table><tbody>' + stageRows + '</tbody></table></div></div>' +
+      '<div class="panel"><h2>What runs automatically</h2><ul class="muted" style="margin:0;padding-left:18px">' +
+      '<li><b>When you add someone:</b> AI scoring and connection notes (about a minute).</li>' +
+      '<li><b>8:30 IST daily:</b> email with today\'s connection queue and acceptance checks.</li>' +
+      '<li><b>9:00 IST daily:</b> follow-up drafts written and emailed. Unused drafts come back after 2 days.</li>' +
+      '<li><b>Follow-up rhythm after connecting:</b> day 3, then 7, 16 and 30 days later, then every 60 days.</li>' +
+      '<li><b>Daily limits:</b> each campaign shows a limited number of new people per day (8 to 12) to keep your LinkedIn activity at a natural pace.</li></ul></div>' +
+      '<div class="panel"><h2>Tips</h2><ul class="muted" style="margin:0;padding-left:18px">' +
+      '<li>Search in Contacts only looks through people already in your list.</li>' +
+      '<li>If someone was added twice, the second copy is skipped automatically (matched by LinkedIn URL).</li>' +
+      '<li>Always read a draft before sending. Where the AI needs a detail it does not know, it leaves a [bracketed placeholder] for you to fill in.</li>' +
+      '<li>Campaigns (who you are targeting and why) live in the PRE Campaigns table in n8n. Ask Claude to add or change one.</li></ul></div>' +
+      '</div>';
+    return h;
+  }
+
   // ---------- SETTINGS ----------
   function renderSettings() {
     const th = store.get('theme', 'system');
@@ -567,7 +648,7 @@
     renderChrome();
     const v = $('#view');
     if (!S.data) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
-    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, add: renderAdd, settings: renderSettings };
+    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, add: renderAdd, guide: renderGuide, settings: renderSettings };
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
     bindViewInputs();
@@ -579,6 +660,12 @@
       q.addEventListener('input', () => { S.filters.q = q.value; const pos = q.selectionStart; render(); const nq = $('#f-q'); nq.focus(); nq.setSelectionRange(pos, pos); });
       $('#f-status').addEventListener('change', (e) => { S.filters.status = e.target.value; render(); });
       $('#f-campaign').addEventListener('change', (e) => { S.filters.campaign = e.target.value; render(); });
+    }
+    const fcs = $('#find-camp');
+    if (fcs) {
+      fcs.addEventListener('change', (e) => { S.findCamp = e.target.value; render(); const ac = $('#a-camp'); if (ac) ac.value = S.findCamp; });
+      $('#find-q').addEventListener('input', (e) => { if (e.target.value.trim()) $('#find-go').href = liSearch(e.target.value.trim()); });
+      const ac = $('#a-camp'); if (ac && S.findCamp) ac.value = S.findCamp;
     }
     const af = $('#add-form');
     if (af) af.addEventListener('submit', async (e) => {
