@@ -88,6 +88,14 @@
 
   const campaigns = () => (S.data ? S.data.campaigns : []);
   const campaignName = (code) => { const c = campaigns().find((x) => x.campaign_code === code); return c ? c.campaign_name : (code || '—'); };
+  const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
+  function campOptionsHtml(selected, allLabel) {
+    const groups = {};
+    campaigns().forEach((c) => { const g = c.category || 'Other'; (groups[g] = groups[g] || []).push(c); });
+    const names = Object.keys(groups).sort((a, b) => ((CAT_ORDER.indexOf(a) + 1) || 99) - ((CAT_ORDER.indexOf(b) + 1) || 99));
+    return (allLabel ? '<option value="">' + esc(allLabel) + '</option>' : '') + names.map((g) => '<optgroup label="' + esc(g) + '">' +
+      groups[g].sort((a, b) => String(a.campaign_name).localeCompare(String(b.campaign_name))).map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === selected ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</optgroup>').join('');
+  }
   const contactByKey = (k) => (S.data ? S.data.contacts.find((c) => c.person_key === k) : null);
 
   // ---------- API ----------
@@ -369,7 +377,8 @@
     h += '<div class="grid-2"><div class="panel"><div class="panel-head"><h2>Stages</h2><span class="faint">contacts per stage</span></div><div class="funnel">' + funnel + '</div></div>' +
       '<div class="panel"><div class="panel-head"><h2>Activity</h2><span class="faint">last 21 days · outbound and replies</span></div>' + activityChart(ints) + '</div></div>';
 
-    const rows = campaigns().map((cp) => {
+    const usedCamps = campaigns().filter((cp) => cs.some((c) => c.campaign_code === cp.campaign_code));
+    const rows = usedCamps.map((cp) => {
       const inC = cs.filter((c) => c.campaign_code === cp.campaign_code);
       const g = (grp) => inC.filter((c) => stageOf(c.status).group === grp).length;
       const reached = g('wait') + g('conn') + g('hot') + inC.filter((c) => c.status === 'IGNORED').length;
@@ -378,7 +387,7 @@
         '<td class="r">' + inC.length + '</td><td class="r">' + g('ready') + '</td><td class="r">' + reached + '</td><td class="r">' + connected + '</td><td class="r">' + g('hot') +
         '</td><td class="r">' + (reached ? Math.round((connected / reached) * 100) + '%' : '—') + '</td></tr>';
     }).join('');
-    h += '<div class="panel"><div class="panel-head"><h2>Campaigns</h2></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th class="r">People</th><th class="r">Ready</th><th class="r">Reached</th><th class="r">Connected</th><th class="r">Engaged+</th><th class="r">Connect rate</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    h += '<div class="panel"><div class="panel-head"><h2>Campaigns</h2><span class="faint">only campaigns with people in them</span></div><div class="table-wrap"><table><thead><tr><th>Campaign</th><th class="r">People</th><th class="r">Ready</th><th class="r">Reached</th><th class="r">Connected</th><th class="r">Engaged+</th><th class="r">Connect rate</th></tr></thead><tbody>' + (rows || '<tr><td colspan="7"><div class="empty" style="border:0">No people added yet. Campaigns appear here once someone is added to them (' + campaigns().length + ' campaigns available).</div></td></tr>') + '</tbody></table></div></div>';
 
     const feed = ints.slice(0, 14).map((i) => '<div class="feed-item"><span class="d">' + fmtDate(i.interaction_date) + '</span><span><b role="button" tabindex="0" data-open="' + esc(i.person_key) + '" style="cursor:pointer">' + esc(i.full_name) + '</b> · ' +
       esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' <span class="pill s-hot">' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) + '</span>' : '') + '</span></div>').join('');
@@ -429,7 +438,7 @@
       return String(x || '').localeCompare(String(y || '')) * dir;
     });
     const statusOpts = '<option value="">All stages</option>' + STAGES.map((s) => '<option value="' + s.key + '"' + (f.status === s.key ? ' selected' : '') + '>' + s.label + '</option>').join('');
-    const campOpts = '<option value="">All campaigns</option>' + campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (f.campaign === c.campaign_code ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('');
+    const campOpts = campOptionsHtml(f.campaign, 'All campaigns');
     const th = (key, label, r) => '<th class="sortable' + (r ? ' r' : '') + '" data-sort="' + key + '">' + label + (col === key ? (dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
 
     let h = topbar('Contacts', list.length + ' of ' + S.data.contacts.length + ' people in your list', '<button class="btn primary" type="button" data-nav="add">Add people</button>');
@@ -456,7 +465,7 @@
     const c = S.drawer ? contactByKey(S.drawer) : null;
     if (!c) { root.innerHTML = ''; return; }
     const hist = S.data.interactions.filter((i) => i.person_key === c.person_key);
-    const campOpts = campaigns().map((cp) => '<option value="' + esc(cp.campaign_code) + '"' + (cp.campaign_code === c.campaign_code ? ' selected' : '') + '>' + esc(cp.campaign_name) + '</option>').join('');
+    const campOpts = campOptionsHtml(c.campaign_code);
     const quick = {
       READY_FOR_CONNECTION: act(c, 'sent', 'Request sent', 'good') + act(c, 'followed', 'Followed') + act(c, 'notrelevant', 'Not relevant', 'ghost bad'),
       FOLLOWING: act(c, 'accepted', 'Connected', 'good') + act(c, 'resend', 'Queue a request'),
@@ -497,7 +506,7 @@
       '<label class="field" for="e-org">Organisation<input id="e-org" value="' + esc(c.organization) + '"></label>' +
       '<label class="field" for="e-email">Email<input id="e-email" type="email" value="' + esc(c.email) + '"></label>' +
       '<label class="field" for="e-camp">Campaign<select id="e-camp">' + campOpts + '</select></label>' +
-      '<label class="field span" for="e-notes">Profile notes<textarea id="e-notes">' + esc(c.profile_notes) + '</textarea></label></div>' +
+      '<label class="field span" for="e-notes">Profile notes (headline, about, recent activity, your angle)<textarea id="e-notes">' + esc(c.profile_notes) + '</textarea></label></div>' +
       '<div class="actions"><button class="btn primary" type="submit">Save changes</button>' + (isDnc(c) ? '' : act(c, 'dnc', 'Do not contact', 'ghost bad')) + '</div></form>' +
       '</aside>';
 
@@ -525,7 +534,7 @@
   // ---------- ADD ----------
   const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes'];
   function renderAdd() {
-    const campOpts = campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '">' + esc(c.campaign_name) + '</option>').join('');
+    const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
     let h = topbar('Add people', 'Browse LinkedIn as usual. On a profile you like, click the "Save to Relationship Engine" bookmark, then one click here adds them. The AI fills in the details, scores them and drafts three connection notes.');
     h += captureBlocks();
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
@@ -535,7 +544,7 @@
     h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Find people on LinkedIn</h2><span class="faint">opens LinkedIn search in a new tab</span></div>' +
       '<p class="muted" style="margin:0">LinkedIn does not allow tools to search or scrape it, so you do the searching. Pick a campaign, tap a search, open promising profiles, then copy their URL and a few lines from their profile into the form below.</p>' +
       '<div class="form-grid"><label class="field" for="find-camp">Campaign<select id="find-camp">' +
-      campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === fc.campaign_code ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</select></label>' +
+      campOptionsHtml(fc.campaign_code) + '</select></label>' +
       '<label class="field" for="find-q">Your own search<input id="find-q" type="search" placeholder="e.g. medical tourism professor Odisha"></label></div>' +
       '<div class="chips">' + uniq.map((t) => '<a class="chip" target="_blank" rel="noopener" href="' + esc(liSearch(t)) + '">' + esc(t) + '</a>').join('') +
       '<a class="btn sm li" id="find-go" target="_blank" rel="noopener" href="' + esc(liSearch(uniq[0] || '')) + '">Search LinkedIn</a></div></div>';
@@ -548,7 +557,7 @@
       '<label class="field" for="a-city">City<input id="a-city"></label>' +
       '<label class="field" for="a-camp">Campaign<select id="a-camp">' + campOpts + '</select></label>' +
       '<label class="field" for="a-source">Source<select id="a-source"><option>LinkedIn (manual research)</option><option>Google search</option><option>Company / university website</option><option>Event / conference</option><option>Journal / publication</option><option>Existing contact</option><option>Other</option></select></label>' +
-      '<label class="field span" for="a-notes">Profile notes<textarea id="a-notes" placeholder="Headline, About section, recent posts, publications. The more specific, the better the notes."></textarea></label></div>' +
+      '<label class="field span" for="a-notes">Profile notes<textarea id="a-notes" style="min-height:120px" placeholder="Example:\nHeadline: Director, International Patient Services at XYZ Hospital\nAbout: 12 years in medical value travel; works with patients from Bangladesh and Africa\nRecent post: announced a new robotic surgery centre (Sept 2026)\nMet at: FICCI Heal 2026\nMy angle: they need a Bhubaneswar-side travel partner for patient families"></textarea></label>' + notesHelp() + '</div>' +
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
 
     h += '<div class="panel section"><h2>Many at once</h2><p class="muted" style="margin:0">Paste CSV with a header row, or tab-separated rows copied from Excel or Google Sheets. Up to 200 per batch. Known columns:</p>' +
@@ -562,9 +571,19 @@
     return h;
   }
 
+  function notesHelp() {
+    return '<details class="span"><summary class="faint" style="cursor:pointer">What to write in Profile notes</summary><div class="muted" style="font-size:13px;margin-top:6px">' +
+      'These notes are what the AI reads to score the person and write your three connection notes. Specific facts give specific, personal notes; an empty box gives generic ones. Copy or jot down:' +
+      '<ul style="margin:6px 0 0;padding-left:18px"><li><b>Headline</b>: their title line under the name.</li>' +
+      '<li><b>About</b>: two or three lines about what they do, who they serve, markets or specialities.</li>' +
+      '<li><b>Something recent</b>: a post, new job, publication, award, event they spoke at or attended.</li>' +
+      '<li><b>Common ground</b>: shared connection, same event, same university, a place in Odisha they mention.</li>' +
+      '<li><b>Your angle</b>: one line on why you want to connect (e.g. they sell pilgrimage tours but have no Odisha partner; they research patient trust).</li></ul>' +
+      'Do not include private details like phone numbers or personal matters. Easiest option: open their profile, press Ctrl+A and Ctrl+C, and paste the whole page here.</div></details>';
+  }
   function campSelect(id, selected) {
     const sel = selected || S.findCamp || ((campaigns()[0] || {}).campaign_code);
-    return '<select id="' + id + '">' + campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === sel ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</select>';
+    return '<select id="' + id + '">' + campOptionsHtml(sel) + '</select>';
   }
   function captureBlocks() {
     let h = '';
@@ -592,7 +611,7 @@
       '<p class="muted" style="margin:0">Open the profile, select all the text (Ctrl+A), copy it (Ctrl+C) and paste it below with the profile link. The AI works out the name, title and organisation.</p>' +
       '<div class="form-grid"><label class="field" for="p-url">LinkedIn profile URL<input id="p-url" required placeholder="https://www.linkedin.com/in/…"></label>' +
       '<label class="field" for="p-camp">Campaign' + campSelect('p-camp') + '</label>' +
-      '<label class="field span" for="p-text">Profile text<textarea id="p-text" required placeholder="Paste the profile page here"></textarea></label></div>' +
+      '<label class="field span" for="p-text">Profile text<textarea id="p-text" required style="min-height:120px" placeholder="On their LinkedIn profile press Ctrl+A, then Ctrl+C, and paste here (Ctrl+V). Menus and buttons in the copied text are fine; the AI ignores them. Add a line at the end for anything you know that is not on the profile, e.g. Met at OTM Mumbai."></textarea></label></div>' +
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
     return h;
   }
