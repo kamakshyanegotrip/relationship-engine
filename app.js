@@ -23,8 +23,22 @@
     filters: { q: '', status: '', campaign: '' },
     sort: { col: 'priority_score', dir: -1 },
     bulkRows: [],
-    findCamp: ''
+    findCamp: store.get('lastcamp', ''),
+    capture: null,
+    captureDone: ''
   };
+  (function readCapture() {
+    const m = (location.hash || '').match(/^#capture=(.+)$/);
+    if (!m) return;
+    try {
+      const d = JSON.parse(decodeURIComponent(m[1]));
+      if (d && d.u) { S.capture = d; S.view = 'add'; }
+    } catch (e) { /* ignore a malformed capture link */ }
+    try { history.replaceState(null, '', '#add'); } catch (e) { /* ignore */ }
+  })();
+  const APP_URL = location.origin + location.pathname;
+  const BOOKMARKLET_CODE = "(()=>{const u=location.href.split('?')[0].split('#')[0];if(!/linkedin\\.com\\/in\\//.test(u)){alert('Open a LinkedIn profile page (linkedin.com/in/...) first, then click this button.');return;}const q=s=>{const e=document.querySelector(s);return e?e.innerText.trim():'';};const m=document.querySelector('main')||document.body;const d={u:u,n:q('h1'),h:q('.text-body-medium'),l:q('.text-body-small.inline'),t:m.innerText.replace(/\\n{2,}/g,'\\n').slice(0,3500)};window.open('" + APP_URL + "#capture='+encodeURIComponent(JSON.stringify(d)),'re_capture');})();";
+  const BOOKMARKLET = 'javascript:' + encodeURIComponent(BOOKMARKLET_CODE);
 
   const theme = store.get('theme', 'system');
   if (theme !== 'system') document.documentElement.setAttribute('data-theme', theme);
@@ -227,8 +241,8 @@
   function onboardCard() {
     return '<div class="onboard"><h2>Your list is empty. Here is how to start</h2>' +
       '<p class="muted" style="margin:0">This app does not search LinkedIn for you. It keeps track of the people you choose to add, scores them with AI, drafts your notes and reminds you when to follow up.</p>' +
-      '<ol class="steps"><li><b>Find people on LinkedIn yourself.</b> Use the "Find people on LinkedIn" links on the Add people page; they open LinkedIn search in a new tab using your campaign keywords.</li>' +
-      '<li><b>Add each person here</b> with their LinkedIn URL and a few lines from their profile. Or paste a list of up to 200.</li>' +
+      '<ol class="steps"><li><b>Add the "Save to Relationship Engine" bookmark</b> from the Add people page to your bookmarks bar (one-time setup).</li>' +
+      '<li><b>Browse LinkedIn yourself</b> and click the bookmark on any profile you like. This app opens with them filled in; press "Add and qualify".</li>' +
       '<li><b>Wait about a minute.</b> The AI scores them and writes three connection notes. Press Refresh; they appear under Today and Contacts.</li>' +
       '<li><b>Send the request on LinkedIn yourself</b>, then tap "Sent with note 1/2/3" so the app can remind you later.</li></ol>' +
       '<div class="actions"><button class="btn primary" type="button" data-nav="add">Add people</button><button class="btn" type="button" data-nav="guide">Read how it works</button></div></div>';
@@ -512,7 +526,8 @@
   const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes'];
   function renderAdd() {
     const campOpts = campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '">' + esc(c.campaign_name) + '</option>').join('');
-    let h = topbar('Add people', 'Step 1: find someone on LinkedIn. Step 2: add them here. The AI scores them and drafts three connection notes within about a minute.');
+    let h = topbar('Add people', 'Browse LinkedIn as usual. On a profile you like, click the "Save to Relationship Engine" bookmark, then one click here adds them. The AI fills in the details, scores them and drafts three connection notes.');
+    h += captureBlocks();
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
     const terms = String(fc.keywords || fc.campaign_name || '').split(',').concat(String(fc.target_profile || '').split(','))
       .map((t) => t.trim()).filter((t) => t && t.length < 60);
@@ -544,6 +559,41 @@
         S.bulkRows.slice(0, 200).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.campaign_code || 'C001') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '')) + '</td></tr>').join('') +
         '</tbody></table></div>' : '') + '</div></div>';
     h += '<p class="faint">Duplicates are skipped automatically: anyone whose LinkedIn URL is already in your contacts is ignored.</p>';
+    return h;
+  }
+
+  function campSelect(id, selected) {
+    const sel = selected || S.findCamp || ((campaigns()[0] || {}).campaign_code);
+    return '<select id="' + id + '">' + campaigns().map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === sel ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</select>';
+  }
+  function captureBlocks() {
+    let h = '';
+    if (S.captureDone) {
+      h += '<div class="onboard"><h2>Added: ' + esc(S.captureDone) + '</h2><p class="muted" style="margin:0">The AI is scoring them and writing three connection notes. They appear in Today and Contacts in about a minute. You can close this tab and go back to LinkedIn; the next person you save opens here again.</p>' +
+        '<div class="actions"><button class="btn" type="button" id="cap-clear">OK</button></div></div>';
+    }
+    if (S.capture) {
+      const c = S.capture;
+      h += '<form class="panel section" id="cap-form" style="border:2px solid var(--accent)"><div class="panel-head" style="margin:0"><h2>Save this person?</h2><span class="faint">captured from the LinkedIn profile you had open</span></div>' +
+        '<div><div style="font-family:var(--font-display);font-size:20px;font-weight:700">' + esc(c.n || 'Name will be read from the profile') + '</div>' +
+        '<div class="muted">' + esc(c.h || '') + (c.l ? ' · ' + esc(c.l) : '') + '</div><div class="mono faint" style="margin-top:4px;word-break:break-all">' + esc(c.u) + '</div></div>' +
+        '<div class="form-grid"><label class="field" for="cap-camp">Campaign' + campSelect('cap-camp') + '</label>' +
+        '<label class="field" for="cap-email">Email (optional)<input id="cap-email" type="email" placeholder="if shown on their profile"></label></div>' +
+        '<details><summary class="faint" style="cursor:pointer">Profile text that will be sent to the AI (' + String(c.t || '').length + ' characters)</summary><textarea id="cap-text" style="min-height:160px;margin-top:8px">' + esc(c.t || '') + '</textarea></details>' +
+        (S.mode === 'demo' ? '<div class="banner"><span>Connect your access key in Settings first; then click the bookmark again on the profile.</span></div>' : '') +
+        '<div class="actions"><button class="btn primary" type="submit"' + (S.mode === 'demo' ? ' disabled' : '') + '>Add and qualify</button><button class="btn ghost" type="button" id="cap-cancel">Discard</button></div></form>';
+    }
+    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>One-click saving from LinkedIn</h2><span class="faint">set up once, on your computer</span></div>' +
+      '<ol class="steps"><li>Show your bookmarks bar in Chrome or Edge (Ctrl+Shift+B, or Cmd+Shift+B on Mac).</li>' +
+      '<li>Drag this button onto the bookmarks bar: <a class="btn sm li" href="' + esc(BOOKMARKLET) + '" onclick="return false" title="Drag me to your bookmarks bar">Save to Relationship Engine</a></li>' +
+      '<li>On LinkedIn, search as usual and open a profile you like. Click the bookmark. This app opens with the person filled in; press "Add and qualify".</li></ol>' +
+      '<p class="hint-line" style="margin:0">It reads only the one profile you have open, when you click it. It does not browse LinkedIn, collect search results, or send anything on LinkedIn. Keep it to people you would genuinely contact.</p></div>';
+    h += '<form class="panel section" id="paste-form"><div class="panel-head" style="margin:0"><h2>Or paste a profile</h2><span class="faint">works on phone too</span></div>' +
+      '<p class="muted" style="margin:0">Open the profile, select all the text (Ctrl+A), copy it (Ctrl+C) and paste it below with the profile link. The AI works out the name, title and organisation.</p>' +
+      '<div class="form-grid"><label class="field" for="p-url">LinkedIn profile URL<input id="p-url" required placeholder="https://www.linkedin.com/in/…"></label>' +
+      '<label class="field" for="p-camp">Campaign' + campSelect('p-camp') + '</label>' +
+      '<label class="field span" for="p-text">Profile text<textarea id="p-text" required placeholder="Paste the profile page here"></textarea></label></div>' +
+      '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
     return h;
   }
 
@@ -601,8 +651,8 @@
       '<p><b>It does not search, scrape or message on LinkedIn.</b> LinkedIn forbids automation and can restrict accounts that use it. So finding people and clicking Connect or Send stays with you.</p>' +
       '<p><b>It does everything around that:</b> keeps your list of people, scores each person for fit, writes three connection notes, tells you each morning who to contact, reminds you to check whether they accepted, drafts follow-ups at the right time, and reads their replies to suggest your answer.</p></div>' +
       '<div class="panel"><h2>Your routine, in order</h2><ol class="steps">' +
-      '<li><b>Find people.</b> Go to <a href="#add" data-nav="add">Add people</a>, choose a campaign and tap a search. LinkedIn opens in a new tab. Open a profile that looks right.</li>' +
-      '<li><b>Add them.</b> Copy their profile URL, name, title and organisation into the Add form. Paste a few lines from their headline, About section or a recent post into Profile notes; the notes get much better with this. To add many at once, paste rows from Excel or Google Sheets.</li>' +
+      '<li><b>Set up the bookmark once.</b> On <a href="#add" data-nav="add">Add people</a>, drag the "Save to Relationship Engine" button to your browser\'s bookmarks bar.</li>' +
+      '<li><b>Find and save people.</b> Search LinkedIn as usual (the campaign search links on Add people help). On a profile you like, click the bookmark; this app opens with the person filled in. Pick the campaign and press "Add and qualify". On a phone, copy the profile text and paste it in "Or paste a profile" instead. To add many at once, paste rows from Excel or Google Sheets.</li>' +
       '<li><b>Let the AI qualify them.</b> Within about a minute each person gets four scores (relevance, relationship potential, contact data, timing), a "why this person" line and three connection notes under 200 characters. Press Refresh to see them. Low scorers are marked Not relevant automatically.</li>' +
       '<li><b>Connect each morning.</b> Open <a href="#today" data-nav="today">Today</a> (or the 8:30 email). For each person: Open LinkedIn, copy a note, send the request on LinkedIn, then tap "Sent with note 1/2/3".</li>' +
       '<li><b>Check acceptances.</b> Ten days later the person appears under "Did they accept?". Tap Accepted, Not yet, or Drop.</li>' +
@@ -661,6 +711,29 @@
       $('#f-status').addEventListener('change', (e) => { S.filters.status = e.target.value; render(); });
       $('#f-campaign').addEventListener('change', (e) => { S.filters.campaign = e.target.value; render(); });
     }
+    const remember = (code) => { S.findCamp = code; store.set('lastcamp', code); };
+    const cf = $('#cap-form');
+    if (cf) {
+      cf.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const c = S.capture; const camp = $('#cap-camp').value; remember(camp);
+        const txt = $('#cap-text') ? $('#cap-text').value : (c.t || '');
+        const p = { full_name: c.n || '', linkedin_url: c.u, email: $('#cap-email').value.trim(), campaign_code: camp, source: 'LinkedIn (one-click capture)',
+          profile_notes: [c.h ? 'Headline: ' + c.h : '', c.l ? 'Location: ' + c.l : '', txt].filter(Boolean).join('\n') };
+        if (await sendProspects([p], cf.querySelector('button[type=submit]'))) { S.captureDone = c.n || 'profile saved'; S.capture = null; render(); }
+      });
+      $('#cap-cancel').addEventListener('click', () => { S.capture = null; render(); });
+    }
+    const cc = $('#cap-clear');
+    if (cc) cc.addEventListener('click', () => { S.captureDone = ''; render(); });
+    const pf = $('#paste-form');
+    if (pf) pf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const url = $('#p-url').value.trim(); const camp = $('#p-camp').value; remember(camp);
+      if (!/linkedin\.com\/(in|pub)\//i.test(url)) { toast('Enter the profile link, like https://www.linkedin.com/in/name', true); return; }
+      const p = { full_name: '', linkedin_url: url, campaign_code: camp, source: 'LinkedIn (pasted profile)', profile_notes: $('#p-text').value.trim().slice(0, 4000) };
+      if (await sendProspects([p], pf.querySelector('button[type=submit]'))) { pf.reset(); S.captureDone = 'profile from ' + url.replace(/^https?:\/\/(www\.)?/, ''); render(); window.scrollTo(0, 0); }
+    });
     const fcs = $('#find-camp');
     if (fcs) {
       fcs.addEventListener('change', (e) => { S.findCamp = e.target.value; render(); const ac = $('#a-camp'); if (ac) ac.value = S.findCamp; });
