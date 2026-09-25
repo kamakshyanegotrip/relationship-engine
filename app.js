@@ -24,6 +24,7 @@
     sort: { col: 'priority_score', dir: -1 },
     bulkRows: [],
     findCamp: store.get('lastcamp', ''),
+    find: Object.assign({ loc: '', ent: '', dept: '', topic: '' }, (() => { try { return JSON.parse(store.get('find', '{}')) || {}; } catch (e) { return {}; } })()),
     capture: null,
     captureDone: ''
   };
@@ -242,11 +243,16 @@
       '.onboard{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:var(--radius);padding:18px;display:flex;flex-direction:column;gap:12px}' +
       '.steps{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px}.steps li{padding-left:4px}' +
       '.guide{display:flex;flex-direction:column;gap:16px;max-width:820px}.guide p{margin:0;max-width:68ch}.guide .panel{display:flex;flex-direction:column;gap:10px}' +
-      '.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none;font-size:12.5px;font-weight:600}.chip:hover{border-color:#0a66c2;color:#0a66c2}' +
+      '.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none;font-size:12.5px;font-weight:600}.chip:hover{border-color:#0a66c2;color:#0a66c2}button.chip{cursor:pointer;font-family:inherit}.chip.on,.chip.on:hover{background:var(--accent);border-color:var(--accent);color:#fff}' +
       '.hint-line{font-size:12.5px;color:var(--ink-3);margin:-4px 0 0}' +
       '@media (max-width:760px){.mobile-nav{grid-template-columns:repeat(6,1fr)}}' +
       '</style>');
   } catch (e) { /* styles are optional */ }
+  const FIND_LOC = ['Bhubaneswar', 'Odisha', 'Cuttack', 'Puri', 'Rourkela', 'Kolkata', 'Delhi', 'Mumbai', 'Bengaluru', 'Chennai', 'Hyderabad', 'Pune', 'Ahmedabad', 'India', 'Bangladesh', 'Nepal', 'Sri Lanka', 'Dubai', 'UAE', 'Saudi Arabia', 'Oman', 'Singapore', 'Malaysia', 'Thailand', 'United Kingdom', 'USA', 'Australia', 'Africa', 'Nigeria', 'Kenya'];
+  const FIND_ENT = ['hospital', 'multispecialty hospital', 'super speciality hospital', 'medical college', 'diagnostic centre', 'wellness centre', 'Ayurveda', 'yoga retreat', 'health insurance', 'TPA', 'pharmaceutical', 'medical tourism facilitator', 'university', 'business school', 'research institute', 'IIT', 'IIM', 'travel agency', 'tour operator', 'DMC', 'inbound tour operator', 'outbound travel', 'pilgrimage tours', 'hotel', 'resort', 'homestay', 'airline', 'cruise', 'MICE', 'event management', 'wedding planner', 'IT company', 'manufacturing', 'bank', 'PSU', 'government', 'tourism department', 'state government', 'ministry', 'embassy', 'consulate', 'NGO', 'CSR foundation', 'media', 'travel magazine'];
+  const FIND_DEPT = ['marketing', 'business development', 'sales', 'international patient services', 'international marketing', 'patient relations', 'medical director', 'hospital administration', 'purchase', 'procurement', 'HR', 'admin', 'travel desk', 'corporate travel', 'CSR', 'operations', 'partnerships', 'alliances', 'corporate communications', 'public relations', 'product', 'contracting', 'reservations', 'professor', 'associate professor', 'researcher', 'PhD scholar', 'dean', 'director', 'general manager', 'CEO', 'founder', 'secretary', 'joint secretary', 'director of tourism'];
+  const findQuery = () => [S.find.dept, S.find.ent, S.find.topic, S.find.loc].map((v) => String(v || '').trim()).filter(Boolean).join(' ');
+  const findPreview = () => findQuery() ? 'Searches LinkedIn people for: <b>' + esc(findQuery()) + '</b>' : 'Fill a box or tap a topic to build your search.';
   const liSearch = (q) => 'https://www.linkedin.com/search/results/people/?keywords=' + encodeURIComponent(q);
   function onboardCard() {
     return '<div class="onboard"><h2>Your list is empty. Here is how to start</h2>' +
@@ -545,13 +551,21 @@
     const terms = String(fc.keywords || fc.campaign_name || '').split(',').concat(String(fc.target_profile || '').split(','))
       .map((t) => t.trim()).filter((t) => t && t.length < 60);
     const uniq = terms.filter((t, i) => terms.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i).slice(0, 12);
+    const F = S.find;
+    const dl = (id, arr) => '<datalist id="' + id + '">' + arr.map((v) => '<option value="' + esc(v) + '">').join('') + '</datalist>';
     h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Find people on LinkedIn</h2><span class="faint">opens LinkedIn search in a new tab</span></div>' +
-      '<p class="muted" style="margin:0">LinkedIn does not allow tools to search or scrape it, so you do the searching. Pick a campaign, tap a search, open promising profiles, then copy their URL and a few lines from their profile into the form below.</p>' +
+      '<p class="muted" style="margin:0">Fill any of the boxes (type your own or pick a suggestion), optionally tap a topic, then press Search LinkedIn. On the results page, press <b>+ Save</b> (Chrome extension) next to anyone worth contacting.</p>' +
       '<div class="form-grid"><label class="field" for="find-camp">Campaign<select id="find-camp">' +
       campOptionsHtml(fc.campaign_code) + '</select></label>' +
-      '<label class="field" for="find-q">Your own search<input id="find-q" type="search" placeholder="e.g. medical tourism professor Odisha"></label></div>' +
-      '<div class="chips">' + uniq.map((t) => '<a class="chip" target="_blank" rel="noopener" href="' + esc(liSearch(t)) + '">' + esc(t) + '</a>').join('') +
-      '<a class="btn sm li" id="find-go" target="_blank" rel="noopener" href="' + esc(liSearch(uniq[0] || '')) + '">Search LinkedIn</a></div></div>';
+      '<label class="field" for="find-loc">Location<input id="find-loc" list="dl-loc" value="' + esc(F.loc) + '" placeholder="e.g. Bhubaneswar, Odisha, Dubai" autocomplete="off"></label>' +
+      '<label class="field" for="find-ent">Entity type / industry<input id="find-ent" list="dl-ent" value="' + esc(F.ent) + '" placeholder="e.g. hospital, university, tour operator" autocomplete="off"></label>' +
+      '<label class="field" for="find-dept">Department / role<input id="find-dept" list="dl-dept" value="' + esc(F.dept) + '" placeholder="e.g. marketing, international patient services" autocomplete="off"></label></div>' +
+      dl('dl-loc', FIND_LOC) + dl('dl-ent', FIND_ENT) + dl('dl-dept', FIND_DEPT) +
+      '<div><div class="faint" style="font-size:12px;margin-bottom:6px">Topic from this campaign (optional, tap to add or remove)</div><div class="chips">' +
+      uniq.map((t) => '<button type="button" class="chip' + (F.topic === t ? ' on' : '') + '" data-topic="' + esc(t) + '" aria-pressed="' + (F.topic === t) + '">' + esc(t) + '</button>').join('') + '</div></div>' +
+      '<div class="actions" style="align-items:center"><a class="btn li" id="find-go" target="_blank" rel="noopener" href="' + esc(liSearch(findQuery())) + '">Search LinkedIn</a>' +
+      '<span class="faint" id="find-preview">' + findPreview() + '</span>' +
+      '<button type="button" class="btn sm ghost" id="find-clear">Clear</button></div></div>';
     h += '<div class="grid-2"><form class="panel section" id="add-form"><h2>Add one person</h2><div class="form-grid">' +
       '<label class="field" for="a-name">Full name<input id="a-name" required placeholder="Dr. Priya Sharma"></label>' +
       '<label class="field" for="a-li">LinkedIn profile URL<input id="a-li" required placeholder="https://www.linkedin.com/in/…"></label>' +
@@ -767,8 +781,16 @@
     });
     const fcs = $('#find-camp');
     if (fcs) {
-      fcs.addEventListener('change', (e) => { S.findCamp = e.target.value; render(); const ac = $('#a-camp'); if (ac) ac.value = S.findCamp; });
-      $('#find-q').addEventListener('input', (e) => { if (e.target.value.trim()) $('#find-go').href = liSearch(e.target.value.trim()); });
+      fcs.addEventListener('change', (e) => { S.findCamp = e.target.value; S.find.topic = ''; store.set('find', JSON.stringify(S.find)); render(); const ac = $('#a-camp'); if (ac) ac.value = S.findCamp; });
+      const upd = () => { store.set('find', JSON.stringify(S.find)); $('#find-go').href = liSearch(findQuery()); $('#find-preview').innerHTML = findPreview(); };
+      [['find-loc', 'loc'], ['find-ent', 'ent'], ['find-dept', 'dept']].forEach(([id, k]) => $('#' + id).addEventListener('input', (e) => { S.find[k] = e.target.value; upd(); }));
+      document.querySelectorAll('[data-topic]').forEach((b) => b.addEventListener('click', () => {
+        S.find.topic = S.find.topic === b.dataset.topic ? '' : b.dataset.topic;
+        document.querySelectorAll('[data-topic]').forEach((x) => { const on = x.dataset.topic === S.find.topic; x.classList.toggle('on', on); x.setAttribute('aria-pressed', on); });
+        upd();
+      }));
+      $('#find-clear').addEventListener('click', () => { S.find = { loc: '', ent: '', dept: '', topic: '' }; store.set('find', JSON.stringify(S.find)); render(); });
+      $('#find-go').addEventListener('click', (e) => { if (!findQuery()) { e.preventDefault(); toast('Fill at least one box or pick a topic first.', true); } });
       const ac = $('#a-camp'); if (ac && S.findCamp) ac.value = S.findCamp;
     }
     const af = $('#add-form');
