@@ -249,8 +249,8 @@
   function onboardCard() {
     return '<div class="onboard"><h2>Your list is empty. Here is how to start</h2>' +
       '<p class="muted" style="margin:0">This app does not search LinkedIn for you. It keeps track of the people you choose to add, scores them with AI, drafts your notes and reminds you when to follow up.</p>' +
-      '<ol class="steps"><li><b>Add the "Save to Relationship Engine" bookmark</b> from the Add people page to your bookmarks bar (one-time setup).</li>' +
-      '<li><b>Browse LinkedIn yourself</b> and click the bookmark on any profile you like. This app opens with them filled in; press "Add and qualify".</li>' +
+      '<ol class="steps"><li><b>Install the Chrome extension</b> from the Add people page (one-time setup, two minutes).</li>' +
+      '<li><b>Search LinkedIn yourself</b> and press <b>+ Save</b> next to anyone worth contacting, or Save on their profile page.</li>' +
       '<li><b>Wait about a minute.</b> The AI scores them and writes three connection notes. Press Refresh; they appear under Today and Contacts.</li>' +
       '<li><b>Send the request on LinkedIn yourself</b>, then tap "Sent with note 1/2/3" so the app can remind you later.</li></ol>' +
       '<div class="actions"><button class="btn primary" type="button" data-nav="add">Add people</button><button class="btn" type="button" data-nav="guide">Read how it works</button></div></div>';
@@ -535,7 +535,7 @@
   const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes'];
   function renderAdd() {
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
-    let h = topbar('Add people', 'Browse LinkedIn as usual. On a profile you like, click the "Save to Relationship Engine" bookmark, then one click here adds them. The AI fills in the details, scores them and drafts three connection notes.');
+    let h = topbar('Add people', 'Search LinkedIn as usual and press + Save (Chrome extension) next to anyone worth contacting. The AI fills in the details, scores them and drafts three connection notes.');
     h += captureBlocks();
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
     const terms = String(fc.keywords || fc.campaign_name || '').split(',').concat(String(fc.target_profile || '').split(','))
@@ -602,11 +602,17 @@
         (S.mode === 'demo' ? '<div class="banner"><span>Connect your access key in Settings first; then click the bookmark again on the profile.</span></div>' : '') +
         '<div class="actions"><button class="btn primary" type="submit"' + (S.mode === 'demo' ? ' disabled' : '') + '>Add and qualify</button><button class="btn ghost" type="button" id="cap-cancel">Discard</button></div></form>';
     }
-    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>One-click saving from LinkedIn</h2><span class="faint">set up once, on your computer</span></div>' +
-      '<ol class="steps"><li>Show your bookmarks bar in Chrome or Edge (Ctrl+Shift+B, or Cmd+Shift+B on Mac).</li>' +
-      '<li>Drag this button onto the bookmarks bar: <a class="btn sm li" href="' + esc(BOOKMARKLET) + '" onclick="return false" title="Drag me to your bookmarks bar">Save to Relationship Engine</a></li>' +
-      '<li>On LinkedIn, search as usual and open a profile you like. Click the bookmark. This app opens with the person filled in; press "Add and qualify".</li></ol>' +
-      '<p class="hint-line" style="margin:0">It reads only the one profile you have open, when you click it. It does not browse LinkedIn, collect search results, or send anything on LinkedIn. Keep it to people you would genuinely contact.</p></div>';
+    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Save from LinkedIn with the Chrome extension</h2><span class="faint">recommended · set up once on your computer</span></div>' +
+      '<p class="muted" style="margin:0">The extension adds a <b>+ Save</b> button next to every person in a LinkedIn people search, and a Save panel on every profile page. One click adds the person to the campaign you picked; the AI scores them and writes the notes.</p>' +
+      '<ol class="steps"><li><a class="btn sm primary" href="relationship-engine-extension.zip" download>Download the extension (.zip)</a> and unzip it. You get a folder called <b>extension</b>.</li>' +
+      '<li>In Chrome or Edge open <span class="mono">chrome://extensions</span> (Edge: <span class="mono">edge://extensions</span>) and switch on <b>Developer mode</b> (top right).</li>' +
+      '<li>Click <b>Load unpacked</b> and choose the unzipped <b>extension</b> folder.</li>' +
+      '<li>Click the puzzle-piece icon in the toolbar, pin <b>Relationship Engine for LinkedIn</b>, click it, paste your access key (the same one as in Settings) and press <b>Save and connect</b>.</li>' +
+      '<li>On LinkedIn, search people as usual. Choose the campaign in the small panel at the bottom-right, then press <b>+ Save</b> next to anyone worth contacting. For richer AI notes, open the profile and press <b>Save to Relationship Engine</b> there.</li></ol>' +
+      '<p class="hint-line" style="margin:0">It reads only what is on your screen, only when you press Save. It does not scroll, browse, click or message anything on LinkedIn. People already saved show <b>Saved ✓</b>.</p>' +
+      '<details><summary class="faint" style="cursor:pointer">No extension? Use the bookmark button instead</summary><ol class="steps"><li>Show your bookmarks bar (Ctrl+Shift+B).</li>' +
+      '<li>Drag this button onto the bar: <a class="btn sm li" href="' + esc(BOOKMARKLET) + '" onclick="return false" title="Drag me to your bookmarks bar">Save to Relationship Engine</a>. If dragging does not work, right-click the bookmarks bar, choose Add page, name it Save to RE and paste the address from the box below as the URL.</li>' +
+      '<li>Open a LinkedIn profile and click the bookmark.</li></ol><textarea readonly class="mono" style="min-height:70px;font-size:11px" onclick="this.select()">' + esc(BOOKMARKLET) + '</textarea></details></div>';
     h += '<form class="panel section" id="paste-form"><div class="panel-head" style="margin:0"><h2>Or paste a profile</h2><span class="faint">works on phone too</span></div>' +
       '<p class="muted" style="margin:0">Open the profile, select all the text (Ctrl+A), copy it (Ctrl+C) and paste it below with the profile link. The AI works out the name, title and organisation.</p>' +
       '<div class="form-grid"><label class="field" for="p-url">LinkedIn profile URL<input id="p-url" required placeholder="https://www.linkedin.com/in/…"></label>' +
@@ -670,8 +676,8 @@
       '<p><b>It does not search, scrape or message on LinkedIn.</b> LinkedIn forbids automation and can restrict accounts that use it. So finding people and clicking Connect or Send stays with you.</p>' +
       '<p><b>It does everything around that:</b> keeps your list of people, scores each person for fit, writes three connection notes, tells you each morning who to contact, reminds you to check whether they accepted, drafts follow-ups at the right time, and reads their replies to suggest your answer.</p></div>' +
       '<div class="panel"><h2>Your routine, in order</h2><ol class="steps">' +
-      '<li><b>Set up the bookmark once.</b> On <a href="#add" data-nav="add">Add people</a>, drag the "Save to Relationship Engine" button to your browser\'s bookmarks bar.</li>' +
-      '<li><b>Find and save people.</b> Search LinkedIn as usual (the campaign search links on Add people help). On a profile you like, click the bookmark; this app opens with the person filled in. Pick the campaign and press "Add and qualify". On a phone, copy the profile text and paste it in "Or paste a profile" instead. To add many at once, paste rows from Excel or Google Sheets.</li>' +
+      '<li><b>Install the Chrome extension once.</b> On <a href="#add" data-nav="add">Add people</a>, download it and load it in Chrome (steps are there), then paste your access key into it.</li>' +
+      '<li><b>Find and save people.</b> Search LinkedIn as usual (the campaign search links on Add people help). Pick the campaign in the extension panel (bottom-right on LinkedIn) and press + Save next to a person in the results, or Save to Relationship Engine on their profile (richer notes). On a phone, copy the profile text and paste it in "Or paste a profile" instead. To add many at once, paste rows from Excel or Google Sheets.</li>' +
       '<li><b>Let the AI qualify them.</b> Within about a minute each person gets four scores (relevance, relationship potential, contact data, timing), a "why this person" line and three connection notes under 200 characters. Press Refresh to see them. Low scorers are marked Not relevant automatically.</li>' +
       '<li><b>Connect each morning.</b> Open <a href="#today" data-nav="today">Today</a> (or the 8:30 email). For each person: Open LinkedIn, copy a note, send the request on LinkedIn, then tap "Sent with note 1/2/3".</li>' +
       '<li><b>Check acceptances.</b> Ten days later the person appears under "Did they accept?". Tap Accepted, Not yet, or Drop.</li>' +
