@@ -64,10 +64,13 @@
     if (n === -1) return 'yesterday';
     return n > 0 ? 'in ' + n + ' days' : Math.abs(n) + ' days ago';
   };
-  const isDnc = (c) => c.do_not_contact === true || c.do_not_contact === 'true';
+  const isDnc = (c) => c.do_not_contact === true || c.do_not_contact === 'true' || c.unsubscribed === true || c.status === 'UNSUBSCRIBED';
   const num = (v) => Number(v || 0);
 
   const STAGES = [
+    { key: 'IDENTIFIED', label: 'Found', group: 'new' },
+    { key: 'RESEARCHED', label: 'Researched', group: 'new' },
+    { key: 'QUALIFIED', label: 'Qualified (no LinkedIn yet)', group: 'ready' },
     { key: 'READY_FOR_CONNECTION', label: 'Ready to connect', group: 'ready' },
     { key: 'FOLLOWING', label: 'Following', group: 'wait' },
     { key: 'CONNECTION_SENT', label: 'Request sent', group: 'wait' },
@@ -80,10 +83,11 @@
     { key: 'IGNORED', label: 'Not accepted', group: 'dead' },
     { key: 'DECLINED', label: 'Declined', group: 'dead' },
     { key: 'NOT_RELEVANT', label: 'Not relevant', group: 'dead' },
+    { key: 'UNSUBSCRIBED', label: 'Unsubscribed', group: 'dead' },
     { key: 'DO_NOT_CONTACT', label: 'Do not contact', group: 'dead' }
   ];
   const stageOf = (k) => STAGES.find((s) => s.key === k) || { key: k, label: String(k || 'Unknown').replace(/_/g, ' ').toLowerCase(), group: 'ready' };
-  const PILL = { ready: 's-ready', wait: 's-wait', conn: 's-conn', hot: 's-hot', dead: 's-dead' };
+  const PILL = { new: 's-new', ready: 's-ready', wait: 's-wait', conn: 's-conn', hot: 's-hot', dead: 's-dead' };
   const statusPill = (k) => { const s = stageOf(k); return '<span class="pill ' + PILL[s.group] + '">' + esc(s.label) + '</span>'; };
   const ACTIVE_FOLLOW = ['CONNECTED', 'FIRST_CONVERSATION', 'ENGAGED', 'OPPORTUNITY', 'COLLABORATION', 'NURTURE'];
 
@@ -100,6 +104,22 @@
       groups[g].sort((a, b) => String(a.campaign_name).localeCompare(String(b.campaign_name))).map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === selected ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</optgroup>').join('');
   }
   const contactByKey = (k) => (S.data ? S.data.contacts.find((c) => c.person_key === k) : null);
+  const canEmail = (c) => !!(c && c.email && ['verified', 'likely', 'found_unverified', 'provided_unverified'].includes(c.email_status) && !isDnc(c) && c.unsubscribed !== true);
+  const JOBS = [
+    ['discover', 'Discover new people', 'Searches OpenAlex, Google Places, listed websites (and Google, once Serper is added) for campaigns with auto-discovery on. Also runs every Monday 6:00.'],
+    ['enrich', 'Research profiles', 'Reads publications and organisation websites for up to 10 new people, writes a profile and sends them for qualification. Also runs daily 6:40.'],
+    ['email', 'Find email addresses', 'Checks official websites, contact pages and public sources for missing emails. Also runs daily 7:15.'],
+    ['monitor', 'Monitor & spot opportunities', 'Looks for new publications and good timing, flags research, B2B, referral and network opportunities. Also runs Wed and Sat 7:10.'],
+    ['report', 'Email me the weekly report', 'Funnel, campaign targets, opportunities and relationships going cold. Also every Monday 8:25.'],
+    ['sheet', 'Sync Google Sheet', 'Refreshes the mirror sheet and imports rows from its Import tab. Also every 6 hours.']
+  ];
+  const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1-y4kiIRBqUSsJHf04w52wttwXHATYGRbJZ7mJ6SoDjI/edit';
+  async function runJob(job, extra, btn) {
+    if (S.mode === 'demo') { toast('Demo mode: connect your key to run jobs.'); return; }
+    if (btn) btn.disabled = true;
+    try { const j = await api('run', Object.assign({ job: job }, extra || {})); toast(j.message || 'Started.'); }
+    catch (e) { toast(e.message, true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
+  }
 
   // ---------- API ----------
   async function api(op, payload) {
@@ -121,7 +141,7 @@
   async function load(quiet) {
     if (!S.key) {
       S.mode = 'demo';
-      S.data = JSON.parse(JSON.stringify(window.DEMO_DATA));
+      S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.data.content = S.data.content || []; S.data.suppressed = 0;
       S.lastSync = null;
       render();
       return;
@@ -129,11 +149,11 @@
     S.loading = true; if (!quiet) renderChrome();
     try {
       const j = await api('bootstrap');
-      S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [] };
+      S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [], content: j.content || [], suppressed: j.suppressed || 0 };
       S.mode = 'live'; S.error = ''; S.lastSync = new Date();
     } catch (e) {
       S.error = e.message;
-      if (!S.data) { S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.mode = 'demo'; }
+      if (!S.data) { S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.data.content = S.data.content || []; S.mode = 'demo'; }
       toast(e.message, true);
     } finally {
       S.loading = false;
@@ -157,7 +177,10 @@
       fu_email: () => Object.assign(c, { pending_message: '', followup_count: num(c.followup_count) + 1, next_followup_date: plus(7), last_contact_date: t }),
       replied: () => Object.assign(c, { pending_message: '', last_contact_date: t }),
       snooze: () => Object.assign(c, { next_followup_date: plus(7) }),
-      dnc: () => Object.assign(c, { status: 'DO_NOT_CONTACT', do_not_contact: true, next_followup_date: '', pending_message: '' })
+      dnc: () => Object.assign(c, { status: 'DO_NOT_CONTACT', do_not_contact: true, next_followup_date: '', pending_message: '' }),
+      collab: () => Object.assign(c, { status: 'COLLABORATION', next_followup_date: plus(30) }),
+      unsub: () => Object.assign(c, { status: 'UNSUBSCRIBED', unsubscribed: true, next_followup_date: '', pending_message: '' }),
+      reopen: () => Object.assign(c, { status: 'NURTURE', do_not_contact: false, next_followup_date: plus(7) })
     };
     (map[action] || (() => {}))();
   }
@@ -165,7 +188,8 @@
   const ACTION_LABEL = {
     sent: 'Marked as request sent', followed: 'Marked as following', later: 'Hidden for 3 days', notrelevant: 'Marked not relevant',
     accepted: 'Marked as connected', resend: 'Back in the connection queue', noresponse: 'Marked as not accepted',
-    fu_linkedin: 'Follow-up logged', fu_email: 'Gmail draft created', replied: 'Reply logged', snooze: 'Snoozed for 7 days', dnc: 'Marked do not contact'
+    fu_linkedin: 'Follow-up logged', fu_email: 'Gmail draft created', replied: 'Reply logged', snooze: 'Snoozed for 7 days', dnc: 'Marked do not contact',
+    collab: 'Marked as collaboration', unsub: 'Unsubscribed from email', reopen: 'Reopened'
   };
 
   async function doAction(key, action, v, btn) {
@@ -234,6 +258,8 @@
     { id: 'today', label: 'Today' },
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'contacts', label: 'Contacts' },
+    { id: 'campaigns', label: 'Campaigns' },
+    { id: 'library', label: 'Library' },
     { id: 'add', label: 'Add people' },
     { id: 'guide', label: 'How it works' },
     { id: 'settings', label: 'Settings' }
@@ -245,7 +271,10 @@
       '.guide{display:flex;flex-direction:column;gap:16px;max-width:820px}.guide p{margin:0;max-width:68ch}.guide .panel{display:flex;flex-direction:column;gap:10px}' +
       '.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none;font-size:12.5px;font-weight:600}.chip:hover{border-color:#0a66c2;color:#0a66c2}button.chip{cursor:pointer;font-family:inherit}.chip.on,.chip.on:hover{background:var(--accent);border-color:var(--accent);color:#fff}' +
       '.hint-line{font-size:12.5px;color:var(--ink-3);margin:-4px 0 0}' +
-      '@media (max-width:760px){.mobile-nav{grid-template-columns:repeat(6,1fr)}}' +
+      '@media (max-width:760px){.mobile-nav{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(62px,1fr);overflow-x:auto;scrollbar-width:none}}' +
+      '.pill.s-new{background:var(--surface-2);color:var(--ink-2)}.progress{height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden;min-width:70px}.progress>i{display:block;height:100%;background:var(--accent)}' +
+      '.info{display:flex;flex-direction:column;gap:6px;font-size:13.5px}.info b{font-weight:600}.opp{border-left:3px solid var(--saffron);background:var(--saffron-soft);padding:8px 10px;border-radius:6px;font-size:13.5px}' +
+      '.runs{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}.runs .panel{gap:8px;display:flex;flex-direction:column}' +
       '</style>');
   } catch (e) { /* styles are optional */ }
   const FIND_LOC = ['Bhubaneswar', 'Odisha', 'Cuttack', 'Puri', 'Rourkela', 'Kolkata', 'Delhi', 'Mumbai', 'Bengaluru', 'Chennai', 'Hyderabad', 'Pune', 'Ahmedabad', 'India', 'Bangladesh', 'Nepal', 'Sri Lanka', 'Dubai', 'UAE', 'Saudi Arabia', 'Oman', 'Singapore', 'Malaysia', 'Thailand', 'United Kingdom', 'USA', 'Australia', 'Africa', 'Nigeria', 'Kenya'];
@@ -269,7 +298,7 @@
       (v.id === 'today' && todayCount ? '<span class="count num">' + todayCount + '</span>' : '') + '</button>').join('');
     $('#nav').innerHTML = navHtml;
     $('#mobile-nav').innerHTML = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
-      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : v.label)) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
+      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : (v.id === 'campaigns' ? 'Camps' : v.label))) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
 
     const dot = $('#conn-dot'); const txt = $('#conn-text');
     dot.className = 'dot ' + (S.mode === 'live' ? 'live' : 'demo');
@@ -299,6 +328,13 @@
     h += queue.length ? '<div class="cards">' + queue.map(queueCard).join('') + '</div>' : '<div class="empty">Nobody is waiting to be contacted. Add people from the Add people tab.</div>';
     h += '</section>';
 
+    const found = S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).sort((a, b) => num(b.priority_score) - num(a.priority_score)).slice(0, 12);
+    if (found.length) {
+      h += '<section class="section"><div class="section-head"><h2>Found by discovery</h2><span class="hint">Qualified people the engine found on websites and research databases. Find their LinkedIn profile, paste the link under Edit details, and they move into the connect queue.</span></div>';
+      h += '<div class="panel table-wrap"><table><tbody>' + found.map((c) => '<tr><td>' + whoBlock(c) + '<div class="faint" style="margin-top:3px">' + esc(c.source || '') + '</div></td><td><span class="pill ' + esc(c.priority || 'C') + '">' + esc(c.priority_score) + '</span></td><td><div class="actions">' + liBtn(c) +
+        (c.email && !['invalid', 'none'].includes(c.email_status) ? '<span class="pill s-conn">email ' + esc(String(c.email_status).replace(/_/g, ' ')) + '</span>' : '') + '<button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">Details</button>' + act(c, 'notrelevant', 'Not relevant', 'ghost bad') + '</div></td></tr>').join('') + '</tbody></table></div></section>';
+    }
+
     h += '<section class="section"><div class="section-head"><h2>Did they accept?</h2><span class="hint">Requests and follows that are due for a check.</span></div>';
     h += checks.length ? '<div class="panel table-wrap"><table><tbody>' + checks.map(checkRow).join('') + '</tbody></table></div>' : '<div class="empty">No pending requests need a check today.</div>';
     h += '</section>';
@@ -317,7 +353,7 @@
     return '<div class="who"><span class="name" role="button" tabindex="0" data-open="' + esc(c.person_key) + '">' + esc(c.full_name) + '</span>' +
       '<span class="role">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span></div>';
   }
-  function liBtn(c, label) { return c.linkedin_url ? '<a class="btn sm li" href="' + esc(c.linkedin_url) + '" target="_blank" rel="noopener">' + (label || 'Open LinkedIn') + '</a>' : ''; }
+  function liBtn(c, label) { return c.linkedin_url ? '<a class="btn sm li" href="' + esc(c.linkedin_url) + '" target="_blank" rel="noopener">' + (label || 'Open LinkedIn') + '</a>' : '<a class="btn sm li" href="' + esc(liSearch([c.full_name, c.organization].filter(Boolean).join(' '))) + '" target="_blank" rel="noopener" title="Find their profile, then add the link under Edit details">Find on LinkedIn</a>'; }
   function act(c, action, label, cls, v) { return '<button type="button" class="btn sm ' + (cls || '') + '" data-act="' + action + '" data-key="' + esc(c.person_key) + '"' + (v ? ' data-v="' + v + '"' : '') + '>' + label + '</button>'; }
 
   function queueCard(c) {
@@ -489,20 +525,30 @@
       '<div class="actions">' + statusPill(c.status) + '<span class="pill ' + esc(c.priority || 'C') + '">Priority ' + esc(c.priority || 'C') + ' · ' + esc(c.priority_score) + '</span><span class="pill">' + esc(campaignName(c.campaign_code)) + '</span></div>' +
       '<div class="actions">' + liBtn(c) + (isDnc(c) ? '' : quick) + '</div>' +
       (c.why_this_person ? '<div class="why"><b>Why this person:</b> ' + esc(c.why_this_person) + '</div>' : '') +
+      (c.opportunity_type ? '<div class="opp"><b>Opportunity · ' + esc(String(c.opportunity_type).replace(/_/g, ' ')) + ':</b> ' + esc(c.opportunity_note) + '</div>' : '') +
+      (c.recommended_action && c.recommended_action.length > 12 ? '<div class="faint"><b>Suggested next step:</b> ' + esc(c.recommended_action) + '</div>' : '') +
+      ((c.professional_summary || c.research_interest || c.potential_need || c.collaboration_opportunities || c.publications) ? '<div class="panel info"><h3 style="margin:0">Research profile</h3>' +
+        (c.professional_summary ? '<div>' + esc(c.professional_summary) + '</div>' : '') +
+        (c.research_interest || c.professional_interest ? '<div><b>Interests:</b> ' + esc([c.research_interest, c.professional_interest].filter(Boolean).join(' · ')) + '</div>' : '') +
+        (c.potential_need ? '<div><b>Possible need:</b> ' + esc(c.potential_need) + '</div>' : '') +
+        (c.collaboration_opportunities ? '<div><b>Collaboration ideas:</b> ' + esc(c.collaboration_opportunities) + '</div>' : '') +
+        (c.publications ? '<details><summary class="faint" style="cursor:pointer">Publications</summary><div class="faint" style="margin-top:4px">' + esc(c.publications).split(' | ').join('<br>') + '</div></details>' : '') +
+        '<div class="faint">' + [c.segment ? 'Segment: ' + esc(c.segment) : '', c.enriched_on ? 'researched ' + fmtDate(c.enriched_on) : '', c.last_monitored ? 'monitored ' + fmtDate(c.last_monitored) : '', c.source_url ? '<a href="' + esc(c.source_url) + '" target="_blank" rel="noopener">source</a>' : ''].filter(Boolean).join(' · ') + '</div></div>' : '') +
       '<div class="panel"><dl class="dl">' +
       '<dt>Next touchpoint</dt><dd>' + (c.next_followup_date ? fmtDate(c.next_followup_date) + ' (' + relDays(c.next_followup_date) + ')' : '—') + '</dd>' +
       '<dt>Last contact</dt><dd>' + (c.last_contact_date ? fmtDate(c.last_contact_date) + ' · ' + esc(c.last_contact_summary) : '—') + '</dd>' +
       '<dt>Connected on</dt><dd>' + fmtDate(c.connection_date) + '</dd>' +
       '<dt>Follow-ups sent</dt><dd class="num">' + num(c.followup_count) + (c.nurture_stage && c.nurture_stage !== 'none' ? ' · stage ' + esc(c.nurture_stage) : '') + '</dd>' +
       '<dt>Last intent</dt><dd>' + esc((c.last_intent || '—').replace(/_/g, ' ').toLowerCase()) + '</dd>' +
-      '<dt>Email</dt><dd>' + (c.email ? '<a class="mono" href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a> <span class="faint">(' + esc(String(c.email_status || '').replace(/_/g, ' ')) + ')</span>' : '<span class="faint">Not added yet. LinkedIn shows email only under Contact info, usually after you connect.</span> <a href="#" onclick="var e=document.getElementById(\'e-email\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add email</a>') + '</dd>' +
+      '<dt>Email</dt><dd>' + (c.email ? '<a class="mono" href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a> <span class="faint">(' + esc(String(c.email_status || '').replace(/_/g, ' ')) + (c.email_source ? ', ' + esc(c.email_source) : '') + ')</span>' : '<span class="faint">Not added yet. LinkedIn shows email only under Contact info, usually after you connect.</span> <a href="#" onclick="var e=document.getElementById(\'e-email\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add email</a>') + '</dd>' +
       '<dt>Mobile</dt><dd>' + (c.phone ? '<a class="mono" href="tel:' + esc(c.phone) + '">' + esc(c.phone) + '</a> · <a href="' + esc(waLink(c.phone)) + '" target="_blank" rel="noopener">WhatsApp</a>' : '<span class="faint">Not added yet.</span> <a href="#" onclick="var e=document.getElementById(\'e-phone\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add mobile</a>') + '</dd>' +
       '<dt>Location</dt><dd>' + esc([c.city, c.country].filter(Boolean).join(', ') || '—') + '</dd>' +
       '<dt>Interests</dt><dd>' + esc(c.interests || '—') + '</dd>' +
       '<dt>Scores</dt><dd>' + scoreLine(c) + '</dd>' +
       '<dt>Added</dt><dd>' + fmtDate(c.added_on) + ' · ' + esc(c.source || '') + '</dd></dl></div>' +
       (c.pending_message ? '<div class="section"><h3>Draft waiting</h3>' + (c.pending_subject ? '<div><b>Subject:</b> ' + esc(c.pending_subject) + '</div>' : '') + '<div class="draft">' + esc(c.pending_message) + '</div><div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' +
-        act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') + '</div></div>' : '') +
+        act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') +
+        (canEmail(c) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') + '</div></div>' : '') +
       (notes && c.status === 'READY_FOR_CONNECTION' ? '<div class="section"><h3>Connection notes</h3><div class="notes">' + notes + '</div></div>' : '') +
       '<div class="section"><h3>History</h3>' + (hist.length ? '<div class="timeline">' + hist.map((i) => '<div class="tl ' + (i.direction === 'inbound' ? 'in' : (i.direction === 'outbound' ? 'out' : '')) + '"><div class="meta">' + fmtDate(i.interaction_date) + ' · ' + esc(i.channel) + ' · ' + esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' · ' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) : '') + '</div>' + (i.message ? '<div class="msg">' + esc(i.message) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="faint">Nothing logged yet.</div>') + '</div>' +
       (isDnc(c) ? '' : '<form class="panel section" id="reply-form"><h3>Log their reply</h3><p class="faint" style="margin:0">Paste what they said. The AI classifies it, moves the stage and drafts your answer.</p>' +
@@ -516,8 +562,14 @@
       '<label class="field" for="e-email">Email<input id="e-email" type="email" value="' + esc(c.email) + '"></label>' +
       '<label class="field" for="e-phone">Mobile number<input id="e-phone" type="tel" inputmode="tel" placeholder="+91 98xxxxxxxx" value="' + esc(c.phone || '') + '"></label>' +
       '<label class="field" for="e-camp">Campaign<select id="e-camp">' + campOpts + '</select></label>' +
-      '<label class="field span" for="e-notes">Profile notes (headline, about, recent activity, your angle)<textarea id="e-notes">' + esc(c.profile_notes) + '</textarea></label></div>' +
-      '<div class="actions"><button class="btn primary" type="submit">Save changes</button>' + (isDnc(c) ? '' : act(c, 'dnc', 'Do not contact', 'ghost bad')) + '</div></form>' +
+      '<label class="field span" for="e-li">LinkedIn profile URL<input id="e-li" placeholder="https://www.linkedin.com/in/…" value="' + esc(c.linkedin_url || '') + '"></label>' +
+      '<label class="field span" for="e-notes">Profile notes (headline, about, recent activity, your angle)<textarea id="e-notes">' + esc(c.profile_notes) + '</textarea></label>' +
+      '<label class="field span" for="e-pnotes">Private notes (only for you; the AI does not use these in messages)<textarea id="e-pnotes" style="min-height:70px">' + esc(c.notes || '') + '</textarea></label></div>' +
+      '<div class="actions"><button class="btn primary" type="submit">Save changes</button></div></form>' +
+      '<div class="panel section"><h3>Relationship status</h3><div class="actions">' +
+        (isDnc(c) || ['DECLINED', 'NOT_RELEVANT', 'IGNORED'].includes(c.status) ? act(c, 'reopen', 'Reopen relationship') : act(c, 'collab', 'Mark as collaboration', 'good') + act(c, 'dnc', 'Do not contact', 'ghost bad')) +
+        (c.email && c.unsubscribed !== true ? act(c, 'unsub', 'Unsubscribe from email', 'ghost') : '') +
+        '<button type="button" class="btn sm ghost bad" data-delete="' + esc(c.person_key) + '">Delete permanently</button></div></div>' +
       '</aside>';
 
     const rf = $('#reply-form');
@@ -535,6 +587,11 @@
     $('#edit-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const payload = { person_key: c.person_key, job_title: $('#e-title').value.trim(), organization: $('#e-org').value.trim(), email: $('#e-email').value.trim(), phone: cleanPhone($('#e-phone').value), campaign_code: $('#e-camp').value, profile_notes: $('#e-notes').value };
+      const li = ($('#e-li').value || '').trim().split('?')[0];
+      if (li && !/linkedin\.com\/(in|pub)\//i.test(li)) { toast('The LinkedIn link should look like https://www.linkedin.com/in/name', true); return; }
+      payload.notes = $('#e-pnotes').value;
+      if (li !== (c.linkedin_url || '')) { payload.linkedin_url = li; if (li && c.status === 'QUALIFIED') payload.status = 'READY_FOR_CONNECTION'; }
+      if (payload.email.toLowerCase() === String(c.email || '').toLowerCase() && c.email_status) payload.email_status_keep = c.email_status;
       if (S.mode === 'demo') { Object.assign(c, payload); toast('Saved (demo only)'); render(); return; }
       const b = e.target.querySelector('button[type=submit]'); b.disabled = true;
       try { const j = await api('update', payload); toast(j.message); await load(true); } catch (err) { toast(err.message, true); b.disabled = false; }
@@ -676,9 +733,75 @@
     } catch (e) { toast(e.message, true); return false; } finally { if (btn) btn.disabled = false; }
   }
 
+  // ---------- CAMPAIGNS ----------
+  const CAMP_FIELDS = [
+    ['campaign_name', 'Name', 'text'], ['category', 'Category', 'cat'], ['relationship_type', 'Relationship type', 'text'], ['sender_identity', 'Write as', 'identity'],
+    ['target_count', 'Target number of people', 'number'], ['daily_limit', 'LinkedIn requests per day', 'number'], ['min_score', 'Minimum AI score (0-100)', 'number'], ['countries', 'Countries (comma separated)', 'text'],
+    ['purpose', 'Purpose: why you want these relationships', 'area'], ['target_profile', 'Ideal person (roles, organisations)', 'area'], ['keywords', 'Keywords (comma separated)', 'area'],
+    ['my_context', 'About you for this campaign (the AI uses this when writing)', 'area'], ['search_queries', 'Search phrases for discovery (one per line, e.g. "multispecialty hospital Bhubaneswar")', 'area'],
+    ['source_urls', 'Web pages to read for people (one per line: team, faculty or member pages)', 'area']
+  ];
+  function nextCampCode() { const n = campaigns().map((c) => Number(String(c.campaign_code).replace(/\D/g, '')) || 0); return 'C' + String(Math.max(46, ...n) + 1).padStart(3, '0'); }
+  function renderCampaigns() {
+    const cs = S.data.contacts;
+    const edit = S.campEdit;
+    let h = topbar('Campaigns', campaigns().length + ' campaigns · who you are building relationships with, and why', '<button class="btn primary" type="button" data-campedit="__new">New campaign</button>');
+    if (edit) {
+      const c = edit === '__new' ? { campaign_code: nextCampCode(), active: true, daily_limit: 10, min_score: 60, target_count: 100, sender_identity: 'business' } : (campaigns().find((x) => x.campaign_code === edit) || {});
+      const cats = CAT_ORDER.concat(['Other']);
+      const field = ([k, label, type]) => {
+        const v = c[k] === undefined || c[k] === null ? '' : c[k];
+        if (type === 'area') return '<label class="field span" for="cf-' + k + '">' + label + '<textarea id="cf-' + k + '" style="min-height:70px">' + esc(v) + '</textarea></label>';
+        if (type === 'cat') return '<label class="field" for="cf-' + k + '">' + label + '<select id="cf-' + k + '">' + cats.map((x) => '<option' + (x === v ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>';
+        if (type === 'identity') return '<label class="field" for="cf-' + k + '">' + label + '<select id="cf-' + k + '"><option value="business"' + (v !== 'academic' ? ' selected' : '') + '>Founder of NegoTrip</option><option value="academic"' + (v === 'academic' ? ' selected' : '') + '>Researcher (no selling)</option></select></label>';
+        return '<label class="field" for="cf-' + k + '">' + label + '<input id="cf-' + k + '" type="' + type + '" value="' + esc(v) + '"></label>';
+      };
+      h += '<form class="panel section" id="camp-form" data-code="' + esc(c.campaign_code) + '"><div class="panel-head" style="margin:0"><h2>' + (edit === '__new' ? 'New campaign ' : 'Edit ') + esc(c.campaign_code) + '</h2><button type="button" class="btn ghost" data-campedit="">Close</button></div><div class="form-grid">' +
+        CAMP_FIELDS.map(field).join('') +
+        '<label class="field"><span><input type="checkbox" id="cf-active"' + (c.active === false || c.active === 'false' ? '' : ' checked') + '> Active</span></label>' +
+        '<label class="field"><span><input type="checkbox" id="cf-auto"' + (c.auto_discovery === true || c.auto_discovery === 'true' ? ' checked' : '') + '> Auto-discovery (weekly search for new people until the target is reached)</span></label></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save campaign</button></div></form>';
+    }
+    const rows = campaigns().slice().sort((a, b) => cs.filter((x) => x.campaign_code === b.campaign_code).length - cs.filter((x) => x.campaign_code === a.campaign_code).length || String(a.campaign_code).localeCompare(b.campaign_code)).map((cp) => {
+      const inC = cs.filter((c) => c.campaign_code === cp.campaign_code);
+      const tg = num(cp.target_count); const pct = tg ? Math.min(100, Math.round((inC.length / tg) * 100)) : 0;
+      const conn = inC.filter((c) => ['conn', 'hot'].includes(stageOf(c.status).group)).length;
+      const off = cp.active === false || cp.active === 'false';
+      return '<tr' + (off ? ' style="opacity:.55"' : '') + '><td><b>' + esc(cp.campaign_name) + '</b><div class="faint">' + esc(cp.campaign_code) + ' · ' + esc(cp.category || '') + (off ? ' · paused' : '') + (cp.auto_discovery === true || cp.auto_discovery === 'true' ? ' · auto-discovery' : '') + '</div></td>' +
+        '<td class="r num">' + inC.length + (tg ? ' / ' + tg : '') + (tg ? '<div class="progress" title="' + pct + '%"><i style="width:' + pct + '%"></i></div>' : '') + '</td><td class="r num">' + conn + '</td>' +
+        '<td><div class="actions" style="justify-content:flex-end"><button type="button" class="btn sm" data-run="discover" data-camp="' + esc(cp.campaign_code) + '">Discover now</button><button type="button" class="btn sm ghost" data-campedit="' + esc(cp.campaign_code) + '">Edit</button><button type="button" class="btn sm ghost" data-campfilter="' + esc(cp.campaign_code) + '">People</button></div></td></tr>';
+    }).join('');
+    h += '<p class="hint-line">"Discover now" searches research databases and organisation websites for new people who fit the campaign (never LinkedIn). New people appear as Found, get researched, then qualified.</p>';
+    h += '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Campaign</th><th class="r">People / target</th><th class="r">Connected</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    return h;
+  }
+
+  // ---------- LIBRARY ----------
+  function renderLibrary() {
+    const items = (S.data.content || []).slice().sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
+    const e = S.libEdit ? (items.find((x) => x.content_id === S.libEdit) || {}) : null;
+    let h = topbar('Content library', 'Papers, articles, itineraries, offers and events the AI may share in follow-ups. It only ever shares items from this list.', '<button class="btn primary" type="button" data-libedit="__new">Add item</button>');
+    if (e) {
+      h += '<form class="panel section" id="lib-form" data-id="' + esc(e.content_id || '') + '"><div class="panel-head" style="margin:0"><h2>' + (e.content_id ? 'Edit item' : 'Add item') + '</h2><button type="button" class="btn ghost" data-libedit="">Close</button></div><div class="form-grid">' +
+        '<label class="field span" for="lf-title">Title<input id="lf-title" required value="' + esc(e.title || '') + '" placeholder="e.g. Our 2026 paper on patient trust in medical tourism"></label>' +
+        '<label class="field span" for="lf-url">Link<input id="lf-url" value="' + esc(e.url || '') + '" placeholder="https://…"></label>' +
+        '<label class="field" for="lf-kind">Type<select id="lf-kind">' + ['paper', 'article', 'itinerary', 'offer', 'event', 'case study', 'video', 'note'].map((k) => '<option' + (k === (e.kind || 'paper') ? ' selected' : '') + '>' + k + '</option>').join('') + '</select></label>' +
+        '<label class="field" for="lf-aud">Who it suits<input id="lf-aud" value="' + esc(e.audience || '') + '" placeholder="academic, healthcare, travel_trade, corporate, government, all"></label>' +
+        '<label class="field span" for="lf-sum">Short summary (what the AI tells people about it)<textarea id="lf-sum" style="min-height:80px">' + esc(e.summary || '') + '</textarea></label>' +
+        '<label class="field"><span><input type="checkbox" id="lf-active"' + (e.active === false ? '' : ' checked') + '> Active</span></label></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save</button>' + (e.content_id ? '<button type="button" class="btn ghost bad" data-libdel="' + esc(e.content_id) + '">Delete</button>' : '') + '</div></form>';
+    }
+    h += items.length ? '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Item</th><th>Type</th><th>Suits</th><th></th></tr></thead><tbody>' + items.map((x) => '<tr' + (x.active === false ? ' style="opacity:.55"' : '') + '><td><b>' + esc(x.title) + '</b>' + (x.url ? ' <a href="' + esc(x.url) + '" target="_blank" rel="noopener">link</a>' : '') + '<div class="faint">' + esc(String(x.summary || '').slice(0, 140)) + '</div></td><td>' + esc(x.kind) + '</td><td>' + esc(x.audience) + '</td><td><button type="button" class="btn sm ghost" data-libedit="' + esc(x.content_id) + '">Edit</button></td></tr>').join('') + '</tbody></table></div>'
+      : '<div class="empty">Nothing here yet. Add your papers, blog posts, sample itineraries or upcoming events. Follow-up drafts will then offer them to the right people instead of leaving [placeholders].</div>';
+    return h;
+  }
+
   // ---------- GUIDE ----------
   function renderGuide() {
     const stageRows = [
+      ['Found', 'Discovered automatically on a website or research database. Waiting to be researched.'],
+      ['Researched', 'Publications and organisation website read; a profile summary is written. Qualification follows within minutes.'],
+      ['Qualified (no LinkedIn yet)', 'A good fit, but no LinkedIn link yet. Use Find on LinkedIn, then paste the link under Edit details.'],
       ['Ready to connect', 'Added and scored well by the AI. Waiting for you to send a LinkedIn request.'],
       ['Following', 'You followed them first instead of connecting. You get a reminder after 14 days.'],
       ['Request sent', 'You sent a connection request. After 10 days the app asks whether they accepted.'],
@@ -688,6 +811,8 @@
       ['Opportunity', 'They have a clear need or want a call. Flagged [OPPORTUNITY] in your inbox.'],
       ['Nurture', 'Connected, three follow-ups done. A light check-in every 30 to 60 days.'],
       ['Not accepted / Declined / Not relevant', 'Parked. They drop out of every queue.'],
+      ['Collaboration', 'You are actively working together. Light touchpoints every 30 days.'],
+      ['Unsubscribed', 'They used the unsubscribe link or asked to stop email. No email is ever sent again.'],
       ['Do not contact', 'They asked not to be contacted, or you chose this. Never shown again.']
     ].map((r) => '<tr><td style="white-space:nowrap"><b>' + r[0] + '</b></td><td>' + r[1] + '</td></tr>').join('');
     let h = topbar('How it works', 'A relationship tracker for LinkedIn. You do the talking; the app remembers, scores, drafts and reminds.');
@@ -706,6 +831,8 @@
       '<div class="panel"><h2>Stages</h2><div class="table-wrap"><table><tbody>' + stageRows + '</tbody></table></div></div>' +
       '<div class="panel"><h2>What runs automatically</h2><ul class="muted" style="margin:0;padding-left:18px">' +
       '<li><b>When you add someone:</b> AI scoring and connection notes (about a minute).</li>' +
+      '<li><b>Discovery, research, email finding, monitoring, reports and the Google Sheet</b> run on their own schedules; see Settings, Run now.</li>' +
+      '<li><b>Your replies and sent emails in Gmail</b> are picked up every few minutes and logged against the right person.</li>' +
       '<li><b>8:30 IST daily:</b> email with today\'s connection queue and acceptance checks.</li>' +
       '<li><b>9:00 IST daily:</b> follow-up drafts written and emailed. Unused drafts come back after 2 days.</li>' +
       '<li><b>Follow-up rhythm after connecting:</b> day 3, then 7, 16 and 30 days later, then every 60 days.</li>' +
@@ -714,7 +841,8 @@
       '<li>Search in Contacts only looks through people already in your list.</li>' +
       '<li>If someone was added twice, the second copy is skipped automatically (matched by LinkedIn URL).</li>' +
       '<li>Always read a draft before sending. Where the AI needs a detail it does not know, it leaves a [bracketed placeholder] for you to fill in.</li>' +
-      '<li>Campaigns (who you are targeting and why) live in the PRE Campaigns table in n8n. Ask Claude to add or change one.</li></ul></div>' +
+      '<li>Campaigns (who you are targeting and why) are edited on the Campaigns tab. Turn on auto-discovery and add search phrases to have the engine find people for you.</li>' +
+      '<li>Add your papers, articles and offers to the Library so follow-ups can share them.</li></ul></div>' +
       '</div>';
     return h;
   }
@@ -728,13 +856,17 @@
       '<label class="field" for="s-key">Access key<input id="s-key" type="password" value="' + esc(S.key) + '" autocomplete="off" placeholder="Paste the key from the PRE-05 workflow"></label>' +
       '<p class="faint" style="margin:0">The key is kept only in this browser. The app code is public on GitHub; your contacts are not, because every request needs this key.</p>' +
       '<div class="actions"><button class="btn primary" type="submit">Save and connect</button>' + (S.key ? '<button class="btn bad" type="button" id="s-forget">Forget key on this device</button>' : '') + '</div></form>';
+    h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
+      JOBS.map((j) => '<div class="panel"><b>' + esc(j[1]) + '</b><span class="faint" style="font-size:12.5px">' + esc(j[2]) + '</span><div><button type="button" class="btn sm primary" data-run="' + j[0] + '">Run</button></div></div>').join('') + '</div>' +
+      '<p class="hint-line" style="margin-top:8px">Google Sheet mirror: <a href="' + SHEET_URL + '" target="_blank" rel="noopener">open the sheet</a>. Paste people into its Import tab (keep the header row) and they are added at the next sync.' + (S.data && S.data.suppressed ? ' · ' + S.data.suppressed + ' addresses on the email suppression list.' : '') + '</p></div>';
     h += '<div class="panel section" style="max-width:640px"><h2>Appearance</h2><label class="field" for="s-theme">Theme<select id="s-theme">' +
       ['system', 'light', 'dark'].map((t) => '<option value="' + t + '"' + (t === th ? ' selected' : '') + '>' + t[0].toUpperCase() + t.slice(1) + '</option>').join('') + '</select></label></div>';
     h += '<div class="panel section" style="max-width:640px"><h2>How it runs</h2><ul class="muted" style="margin:0;padding-left:18px">' +
       '<li>8:30 IST: the LinkedIn queue email. 9:00 IST: follow-up drafts. The Today tab shows the same lists.</li>' +
       '<li>LinkedIn is never automated. You send every request and message yourself; this app records what you did.</li>' +
       '<li>"Create Gmail draft" puts a draft in your Gmail. It never sends on its own.</li>' +
-      '<li>To add a campaign, add a row to the PRE Campaigns data table in n8n.</li></ul></div>';
+      '<li>Email is sent automatically only to verified or found addresses, never to anyone unsubscribed or marked do not contact, at most 30 a day, and always with an unsubscribe link.</li>' +
+      '<li>Add or edit campaigns on the Campaigns tab.</li></ul></div>';
     return h;
   }
 
@@ -743,7 +875,7 @@
     renderChrome();
     const v = $('#view');
     if (!S.data) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
-    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, add: renderAdd, guide: renderGuide, settings: renderSettings };
+    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings };
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
     bindViewInputs();
@@ -812,6 +944,25 @@
         if (await sendProspects(S.bulkRows.slice(0, 200), e.target)) { S.bulkRows = []; render(); }
       });
     }
+    const cfm = $('#camp-form');
+    if (cfm) cfm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const p = { campaign_code: cfm.getAttribute('data-code') };
+      CAMP_FIELDS.forEach(([k, , type]) => { const el = $('#cf-' + k); if (el) p[k] = type === 'number' ? (el.value === '' ? '' : Number(el.value)) : el.value; });
+      p.active = $('#cf-active').checked; p.auto_discovery = $('#cf-auto').checked;
+      if (!String(p.campaign_name || '').trim()) { toast('Give the campaign a name.', true); return; }
+      if (S.mode === 'demo') { const ex = campaigns().find((x) => x.campaign_code === p.campaign_code); if (ex) Object.assign(ex, p); else S.data.campaigns.push(p); S.campEdit = null; toast('Saved (demo only)'); render(); return; }
+      const b = cfm.querySelector('button[type=submit]'); b.disabled = true;
+      try { const j = await api('campaign_save', p); toast(j.message || 'Campaign saved.'); S.campEdit = null; await load(true); } catch (err) { toast(err.message, true); b.disabled = false; }
+    });
+    const lfm = $('#lib-form');
+    if (lfm) lfm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const p = { content_id: lfm.getAttribute('data-id') || '', title: $('#lf-title').value.trim(), url: $('#lf-url').value.trim(), kind: $('#lf-kind').value, audience: $('#lf-aud').value.trim() || 'all', summary: $('#lf-sum').value.trim(), active: $('#lf-active').checked };
+      if (S.mode === 'demo') { p.content_id = p.content_id || 'K' + Date.now().toString(36); S.data.content = (S.data.content || []).filter((x) => x.content_id !== p.content_id).concat([p]); S.libEdit = null; render(); return; }
+      const b = lfm.querySelector('button[type=submit]'); b.disabled = true;
+      try { const j = await api('content_save', p); toast(j.message || 'Saved.'); S.libEdit = null; await load(true); } catch (err) { toast(err.message, true); b.disabled = false; }
+    });
     const sf = $('#settings-form');
     if (sf) {
       sf.addEventListener('submit', async (e) => {
@@ -839,8 +990,34 @@
   }
 
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort]');
+    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete]');
     if (!t) return;
+    if (t.hasAttribute('data-run')) { runJob(t.getAttribute('data-run'), t.getAttribute('data-camp') ? { campaign_code: t.getAttribute('data-camp'), limit: 12 } : {}, t); return; }
+    if (t.hasAttribute('data-campedit')) { S.campEdit = t.getAttribute('data-campedit') || null; render(); window.scrollTo(0, 0); return; }
+    if (t.hasAttribute('data-campfilter')) { S.filters = { q: '', status: '', campaign: t.getAttribute('data-campfilter') }; go('contacts'); return; }
+    if (t.hasAttribute('data-libedit')) { S.libEdit = t.getAttribute('data-libedit') || null; if (S.libEdit === '__new') S.libEdit = '__new'; render(); window.scrollTo(0, 0); return; }
+    if (t.hasAttribute('data-libdel')) {
+      const id = t.getAttribute('data-libdel'); if (!confirm('Delete this library item?')) return;
+      if (S.mode === 'demo') { S.data.content = S.data.content.filter((x) => x.content_id !== id); S.libEdit = null; render(); return; }
+      api('content_delete', { content_id: id }).then((j) => { toast(j.message || 'Deleted.'); S.libEdit = null; return load(true); }).catch((er) => toast(er.message, true));
+      return;
+    }
+    if (t.hasAttribute('data-sendmail')) {
+      const c = contactByKey(t.getAttribute('data-sendmail')); if (!c) return;
+      if (/\[[^\]]{2,80}\]/.test(c.pending_message || '')) { toast('The draft still has a [placeholder]. Edit it in your email app or fill it first; it will not be sent with placeholders.', true); return; }
+      if (!confirm('Send this email now to ' + c.email + ' from your Gmail? An unsubscribe line is added at the bottom.')) return;
+      if (S.mode === 'demo') { toast('Demo mode: nothing was sent.'); return; }
+      t.disabled = true;
+      api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '' }).then((j) => { toast(j.message || 'Sent.'); return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
+      return;
+    }
+    if (t.hasAttribute('data-delete')) {
+      const c = contactByKey(t.getAttribute('data-delete')); if (!c) return;
+      if (!confirm('Delete ' + c.full_name + ' and all their details permanently? This cannot be undone.')) return;
+      if (S.mode === 'demo') { S.data.contacts = S.data.contacts.filter((x) => x !== c); S.drawer = null; render(); return; }
+      api('delete', { person_key: c.person_key }).then((j) => { toast(j.message || 'Deleted.'); S.drawer = null; return load(true); }).catch((er) => toast(er.message, true));
+      return;
+    }
     if (t.hasAttribute('data-nav')) { go(t.getAttribute('data-nav')); return; }
     if (t.hasAttribute('data-act')) { doAction(t.getAttribute('data-key'), t.getAttribute('data-act'), t.getAttribute('data-v'), t); return; }
     if (t.hasAttribute('data-copy')) { copyText(t.getAttribute('data-copy'), t); return; }
