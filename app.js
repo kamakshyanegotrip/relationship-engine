@@ -88,6 +88,8 @@
 
   const campaigns = () => (S.data ? S.data.campaigns : []);
   const campaignName = (code) => { const c = campaigns().find((x) => x.campaign_code === code); return c ? c.campaign_name : (code || '—'); };
+  const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').slice(0, 20);
+  const waLink = (ph) => { let d = String(ph || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return 'https://wa.me/' + d; };
   const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
   function campOptionsHtml(selected, allLabel) {
     const groups = {};
@@ -487,7 +489,8 @@
       '<dt>Connected on</dt><dd>' + fmtDate(c.connection_date) + '</dd>' +
       '<dt>Follow-ups sent</dt><dd class="num">' + num(c.followup_count) + (c.nurture_stage && c.nurture_stage !== 'none' ? ' · stage ' + esc(c.nurture_stage) : '') + '</dd>' +
       '<dt>Last intent</dt><dd>' + esc((c.last_intent || '—').replace(/_/g, ' ').toLowerCase()) + '</dd>' +
-      '<dt>Email</dt><dd>' + (c.email ? '<span class="mono">' + esc(c.email) + '</span> <span class="faint">(' + esc(c.email_status) + ')</span>' : '—') + '</dd>' +
+      '<dt>Email</dt><dd>' + (c.email ? '<a class="mono" href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a> <span class="faint">(' + esc(String(c.email_status || '').replace(/_/g, ' ')) + ')</span>' : '<span class="faint">Not added yet. LinkedIn shows email only under Contact info, usually after you connect.</span> <a href="#" onclick="var e=document.getElementById(\'e-email\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add email</a>') + '</dd>' +
+      '<dt>Mobile</dt><dd>' + (c.phone ? '<a class="mono" href="tel:' + esc(c.phone) + '">' + esc(c.phone) + '</a> · <a href="' + esc(waLink(c.phone)) + '" target="_blank" rel="noopener">WhatsApp</a>' : '<span class="faint">Not added yet.</span> <a href="#" onclick="var e=document.getElementById(\'e-phone\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add mobile</a>') + '</dd>' +
       '<dt>Location</dt><dd>' + esc([c.city, c.country].filter(Boolean).join(', ') || '—') + '</dd>' +
       '<dt>Interests</dt><dd>' + esc(c.interests || '—') + '</dd>' +
       '<dt>Scores</dt><dd>' + scoreLine(c) + '</dd>' +
@@ -505,6 +508,7 @@
       '<label class="field" for="e-title">Job title<input id="e-title" value="' + esc(c.job_title) + '"></label>' +
       '<label class="field" for="e-org">Organisation<input id="e-org" value="' + esc(c.organization) + '"></label>' +
       '<label class="field" for="e-email">Email<input id="e-email" type="email" value="' + esc(c.email) + '"></label>' +
+      '<label class="field" for="e-phone">Mobile number<input id="e-phone" type="tel" inputmode="tel" placeholder="+91 98xxxxxxxx" value="' + esc(c.phone || '') + '"></label>' +
       '<label class="field" for="e-camp">Campaign<select id="e-camp">' + campOpts + '</select></label>' +
       '<label class="field span" for="e-notes">Profile notes (headline, about, recent activity, your angle)<textarea id="e-notes">' + esc(c.profile_notes) + '</textarea></label></div>' +
       '<div class="actions"><button class="btn primary" type="submit">Save changes</button>' + (isDnc(c) ? '' : act(c, 'dnc', 'Do not contact', 'ghost bad')) + '</div></form>' +
@@ -524,7 +528,7 @@
     });
     $('#edit-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const payload = { person_key: c.person_key, job_title: $('#e-title').value.trim(), organization: $('#e-org').value.trim(), email: $('#e-email').value.trim(), campaign_code: $('#e-camp').value, profile_notes: $('#e-notes').value };
+      const payload = { person_key: c.person_key, job_title: $('#e-title').value.trim(), organization: $('#e-org').value.trim(), email: $('#e-email').value.trim(), phone: cleanPhone($('#e-phone').value), campaign_code: $('#e-camp').value, profile_notes: $('#e-notes').value };
       if (S.mode === 'demo') { Object.assign(c, payload); toast('Saved (demo only)'); render(); return; }
       const b = e.target.querySelector('button[type=submit]'); b.disabled = true;
       try { const j = await api('update', payload); toast(j.message); await load(true); } catch (err) { toast(err.message, true); b.disabled = false; }
@@ -532,7 +536,7 @@
   }
 
   // ---------- ADD ----------
-  const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes'];
+  const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes', 'phone'];
   function renderAdd() {
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
     let h = topbar('Add people', 'Search LinkedIn as usual and press + Save (Chrome extension) next to anyone worth contacting. The AI fills in the details, scores them and drafts three connection notes.');
@@ -554,6 +558,7 @@
       '<label class="field" for="a-title">Job title<input id="a-title" placeholder="Associate Professor"></label>' +
       '<label class="field" for="a-org">Organisation<input id="a-org" placeholder="XYZ University"></label>' +
       '<label class="field" for="a-email">Public or official email<input id="a-email" type="email"></label>' +
+      '<label class="field" for="a-phone">Mobile number<input id="a-phone" type="tel" inputmode="tel" placeholder="+91 98xxxxxxxx"></label>' +
       '<label class="field" for="a-city">City<input id="a-city"></label>' +
       '<label class="field" for="a-camp">Campaign<select id="a-camp">' + campOpts + '</select></label>' +
       '<label class="field" for="a-source">Source<select id="a-source"><option>LinkedIn (manual research)</option><option>Google search</option><option>Company / university website</option><option>Event / conference</option><option>Journal / publication</option><option>Existing contact</option><option>Other</option></select></label>' +
@@ -597,7 +602,8 @@
         '<div><div style="font-family:var(--font-display);font-size:20px;font-weight:700">' + esc(c.n || 'Name will be read from the profile') + '</div>' +
         '<div class="muted">' + esc(c.h || '') + (c.l ? ' · ' + esc(c.l) : '') + '</div><div class="mono faint" style="margin-top:4px;word-break:break-all">' + esc(c.u) + '</div></div>' +
         '<div class="form-grid"><label class="field" for="cap-camp">Campaign' + campSelect('cap-camp') + '</label>' +
-        '<label class="field" for="cap-email">Email (optional)<input id="cap-email" type="email" placeholder="if shown on their profile"></label></div>' +
+        '<label class="field" for="cap-email">Email (optional)<input id="cap-email" type="email" placeholder="if shown under Contact info"></label>' +
+        '<label class="field" for="cap-phone">Mobile (optional)<input id="cap-phone" type="tel" inputmode="tel" placeholder="if you have it"></label></div>' +
         '<details><summary class="faint" style="cursor:pointer">Profile text that will be sent to the AI (' + String(c.t || '').length + ' characters)</summary><textarea id="cap-text" style="min-height:160px;margin-top:8px">' + esc(c.t || '') + '</textarea></details>' +
         (S.mode === 'demo' ? '<div class="banner"><span>Connect your access key in Settings first; then click the bookmark again on the profile.</span></div>' : '') +
         '<div class="actions"><button class="btn primary" type="submit"' + (S.mode === 'demo' ? ' disabled' : '') + '>Add and qualify</button><button class="btn ghost" type="button" id="cap-cancel">Discard</button></div></form>';
@@ -743,7 +749,7 @@
         e.preventDefault();
         const c = S.capture; const camp = $('#cap-camp').value; remember(camp);
         const txt = $('#cap-text') ? $('#cap-text').value : (c.t || '');
-        const p = { full_name: c.n || '', linkedin_url: c.u, email: $('#cap-email').value.trim(), campaign_code: camp, source: 'LinkedIn (one-click capture)',
+        const p = { full_name: c.n || '', linkedin_url: c.u, email: $('#cap-email').value.trim(), phone: cleanPhone($('#cap-phone').value), campaign_code: camp, source: 'LinkedIn (one-click capture)',
           profile_notes: [c.h ? 'Headline: ' + c.h : '', c.l ? 'Location: ' + c.l : '', txt].filter(Boolean).join('\n') };
         if (await sendProspects([p], cf.querySelector('button[type=submit]'))) { S.captureDone = c.n || 'profile saved'; S.capture = null; render(); }
       });
@@ -769,7 +775,7 @@
     if (af) af.addEventListener('submit', async (e) => {
       e.preventDefault();
       const p = { full_name: $('#a-name').value.trim(), linkedin_url: $('#a-li').value.trim(), job_title: $('#a-title').value.trim(), organization: $('#a-org').value.trim(),
-        email: $('#a-email').value.trim(), city: $('#a-city').value.trim(), campaign_code: $('#a-camp').value, source: $('#a-source').value, profile_notes: $('#a-notes').value.trim() };
+        email: $('#a-email').value.trim(), phone: cleanPhone($('#a-phone').value), city: $('#a-city').value.trim(), campaign_code: $('#a-camp').value, source: $('#a-source').value, profile_notes: $('#a-notes').value.trim() };
       if (!/linkedin\.com\/(in|pub)\//i.test(p.linkedin_url)) { toast('Enter a LinkedIn profile URL like https://www.linkedin.com/in/name', true); return; }
       if (await sendProspects([p], af.querySelector('button[type=submit]'))) af.reset();
     });
