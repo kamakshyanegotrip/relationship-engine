@@ -14,6 +14,8 @@
     apiUrl: store.get('api', DEFAULT_API),
     key: store.get('key', ''),
     data: null,
+    inbox: [],
+    threads: {},
     mode: 'demo',
     loading: false,
     lastSync: null,
@@ -99,6 +101,14 @@
   const calLink = (c) => { const t = new Date(); t.setDate(t.getDate() + 3); t.setHours(11, 0, 0, 0); const e = new Date(t.getTime() + 30 * 60000); const f = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
     return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent('Call: ' + (c.full_name || '') + (c.organization ? ' (' + c.organization + ')' : '')) + '&dates=' + f(t) + '/' + f(e) + '&details=' + encodeURIComponent((c.recommended_action || '') + '\n' + (c.linkedin_url || '')) + (c.email ? '&add=' + encodeURIComponent(c.email) : ''); };
   const CARD_API = 'https://n8n.assignover.in/webhook/pre-card';
+  const INBOX_API = 'https://n8n.assignover.in/webhook/pre-inbox-api';
+  const MAILBOXES = [['b2b0', 'info@b2btourdeals.com', 'B2B'], ['b2b1', 'ops1@b2btourdeals.com', 'B2B'], ['b2b2', 'ops2@b2btourdeals.com', 'B2B'], ['b2b3', 'ops3@b2btourdeals.com', 'B2B'], ['b2b4', 'ops4@b2btourdeals.com', 'B2B'], ['b2b5', 'ops5@b2btourdeals.com', 'B2B'], ['b2b6', 'ops6@b2btourdeals.com', 'B2B'], ['b2b7', 'ops7@b2btourdeals.com', 'B2B'],
+    ['info', 'info@negotrip.com', 'B2C'], ['kn', 'kn0733@gmail.com', 'Individual / Research'], ['icssr', 'icssrmedicaltourism@gmail.com', 'Research'], ['assign', 'assignover@gmail.com', 'Research'], ['hpcu', 'ra1.tourism@hpcu.ac.in', 'Research']];
+  const mbAddr = (k) => { const m = MAILBOXES.find((x) => x[0] === k); return m ? m[1] : ''; };
+  function fromOptionsHtml(selected, autoLabel) {
+    const groups = {}; MAILBOXES.forEach((m) => { (groups[m[2]] = groups[m[2]] || []).push(m); });
+    return '<option value="">' + esc(autoLabel || 'Automatic (best address)') + '</option>' + Object.keys(groups).map((g) => '<optgroup label="' + esc(g) + '">' + groups[g].map((m) => '<option value="' + m[0] + '"' + (m[0] === selected ? ' selected' : '') + '>' + esc(m[1]) + '</option>').join('') + '</optgroup>').join('');
+  }
   const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
   function campOptionsHtml(selected, allLabel) {
     const groups = {};
@@ -108,7 +118,7 @@
       groups[g].sort((a, b) => String(a.campaign_name).localeCompare(String(b.campaign_name))).map((c) => '<option value="' + esc(c.campaign_code) + '"' + (c.campaign_code === selected ? ' selected' : '') + '>' + esc(c.campaign_name) + '</option>').join('') + '</optgroup>').join('');
   }
   const contactByKey = (k) => (S.data ? S.data.contacts.find((c) => c.person_key === k) : null);
-  const canEmail = (c) => !!(c && c.email && ['verified', 'likely', 'found_unverified', 'provided_unverified'].includes(c.email_status) && !isDnc(c) && c.unsubscribed !== true);
+  const canEmail = (c) => !!(c && c.email && ['verified', 'likely', 'found_unverified', 'provided_unverified', 'known'].includes(c.email_status) && !isDnc(c) && c.unsubscribed !== true);
   const JOBS = [
     ['discover', 'Discover new people', 'Searches OpenAlex, Google Places, listed websites (and Google, once Serper is added) for campaigns with auto-discovery on. Also runs every Monday 6:00.'],
     ['enrich', 'Research profiles', 'Reads publications and organisation websites for up to 10 new people, writes a profile and sends them for qualification. Also runs daily 6:40.'],
@@ -121,7 +131,7 @@
   async function runJob(job, extra, btn) {
     if (S.mode === 'demo') { toast('Demo mode: connect your key to run jobs.'); return; }
     if (btn) btn.disabled = true;
-    try { const j = await api('run', Object.assign({ job: job }, extra || {})); toast(j.message || 'Started.'); }
+    try { const j = await api('run', Object.assign({ job: job }, extra || {})); toast(job === 'discover' ? 'Searching now. New people appear on Today under "Just discovered" in 2 to 5 minutes, then get researched and scored.' : (j.message || 'Started.')); if (job === 'discover') { setTimeout(() => load(true), 180000); setTimeout(() => load(true), 480000); } }
     catch (e) { toast(e.message, true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
   }
 
@@ -142,6 +152,23 @@
     return j;
   }
 
+  async function inboxApi(op, payload) {
+    const r = await fetch(INBOX_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (!r.ok || !j) throw new Error((j && j.message) || 'The inbox answered with status ' + r.status + '.');
+    if (j.ok === false) throw new Error(j.message || 'The inbox request did not go through.');
+    return j;
+  }
+  async function loadInbox() {
+    if (S.mode !== 'live') return;
+    try { const j = await inboxApi('list'); S.inbox = j.inbox || []; if (S.view === 'today') render(); } catch (e) { S.inbox = S.inbox || []; }
+  }
+  async function loadThread(key) {
+    if (S.mode !== 'live' || !key) return;
+    try { const j = await inboxApi('thread', { person_key: key }); S.threads[key] = j.thread || []; } catch (e) { S.threads[key] = []; }
+    if (S.drawer === key) renderDrawer();
+  }
+
   async function load(quiet) {
     if (!S.key) {
       S.mode = 'demo';
@@ -154,7 +181,8 @@
     try {
       const j = await api('bootstrap');
       S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [], content: j.content || [], suppressed: j.suppressed || 0 };
-      S.mode = 'live'; S.error = ''; S.lastSync = new Date();
+      S.mode = 'live'; S.error = ''; S.lastSync = new Date(); S.threads = {};
+      setTimeout(loadInbox, 50);
     } catch (e) {
       S.error = e.message;
       if (!S.data) { S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.data.content = S.data.content || []; S.mode = 'demo'; }
@@ -326,6 +354,10 @@
     const dateStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
     let h = topbar('Today', dateStr + ' · ' + queue.length + ' to connect · ' + checks.length + ' to check · ' + drafts.length + ' follow-ups ready');
     if (!S.data.contacts.length) return h + onboardCard();
+    const inbox = (S.inbox || []);
+    if (inbox.length) {
+      h += '<section class="section"><div class="section-head"><h2>Inbox · ' + inbox.length + ' new ' + (inbox.length === 1 ? 'reply' : 'replies') + '</h2><span class="hint">Replies from your contacts to any of your connected addresses, checked every 10 minutes. Your answer goes back in the same email thread, from the address they wrote to.</span></div><div class="cards">' + inbox.map(inboxCard).join('') + '</div></section>';
+    }
 
     h += '<section class="section"><div class="section-head"><h2>Connect on LinkedIn</h2><span class="hint">Open the profile, send the request yourself, then log which note you used.' +
       (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : '') + '</span></div>';
@@ -333,6 +365,11 @@
     h += '</section>';
 
     const found = S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).sort((a, b) => num(b.priority_score) - num(a.priority_score)).slice(0, 12);
+    const pending = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c)).sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
+    if (pending.length) {
+      h += '<section class="section"><div class="section-head"><h2>Just discovered · ' + pending.length + ' being researched</h2><span class="hint">New people from Discover now, mailboxes and imports. The engine researches and scores them (usually within 10 minutes); good matches then move to Found by discovery below.</span></div>';
+      h += '<div class="panel table-wrap"><table><tbody>' + pending.slice(0, 15).map((c) => '<tr><td>' + whoBlock(c) + '<div class="faint" style="margin-top:3px">' + esc(c.source || '') + ' · ' + esc(campaignName(c.campaign_code)) + '</div></td><td><span class="pill">' + (c.status === 'IDENTIFIED' ? 'found' : 'researched') + '</span></td><td><div class="actions"><button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">Details</button>' + act(c, 'notrelevant', 'Not relevant', 'ghost bad') + '</div></td></tr>').join('') + '</tbody></table>' + (pending.length > 15 ? '<div class="faint" style="padding:8px">+ ' + (pending.length - 15) + ' more in Contacts</div>' : '') + '</div></section>';
+    }
     if (found.length) {
       h += '<section class="section"><div class="section-head"><h2>Found by discovery</h2><span class="hint">Qualified people the engine found on websites and research databases. Find their LinkedIn profile, paste the link under Edit details, and they move into the connect queue.</span></div>';
       h += '<div class="panel table-wrap"><table><tbody>' + found.map((c) => '<tr><td>' + whoBlock(c) + '<div class="faint" style="margin-top:3px">' + esc(c.source || '') + '</div></td><td><span class="pill ' + esc(c.priority || 'C') + '">' + esc(c.priority_score) + '</span></td><td><div class="actions">' + liBtn(c) +
@@ -347,6 +384,15 @@
     h += drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>';
     h += '</section>';
     return h;
+  }
+
+  function inboxCard(m) {
+    const id = esc(m.gmail_id); const to = m.to_address || mbAddr(m.mailbox);
+    return '<article class="card"><div class="card-head"><div class="who"><span class="name" role="button" tabindex="0" data-open="' + esc(m.person_key) + '">' + esc(m.full_name || m.from_email) + '</span><span class="role">' + esc(m.from_email) + ' → ' + esc(to) + '</span></div>' +
+      '<div class="actions"><span class="pill">' + fmtDate(String(m.received_at || '').slice(0, 10)) + '</span></div></div>' +
+      '<div><b>' + esc(m.subject || '(no subject)') + '</b></div><div class="draft" style="max-height:220px;overflow:auto">' + esc(m.body) + '</div>' +
+      '<label class="field" for="ib-' + id + '">Your reply<textarea id="ib-' + id + '" placeholder="Write your answer. It goes from ' + esc(to) + ' in the same thread."></textarea></label>' +
+      '<div class="actions"><button type="button" class="btn sm primary" data-inboxreply="' + id + '">Send reply</button><button type="button" class="btn sm" data-open="' + esc(m.person_key) + '">Details</button><button type="button" class="btn sm ghost" data-inboxdone="' + id + '">Mark handled</button></div></article>';
   }
 
   function scoreLine(c) {
@@ -510,6 +556,14 @@
   }
 
   // ---------- DRAWER ----------
+  function threadHtml(c) {
+    const t = S.threads[c.person_key];
+    if (t === undefined && S.mode === 'live') { S.threads[c.person_key] = null; setTimeout(() => loadThread(c.person_key), 0); }
+    if (!t) return '<div class="faint">' + (S.mode === 'live' ? 'Loading…' : 'Connect your key to see emails.') + '</div>';
+    if (!t.length) return '<div class="faint">No emails through the engine yet' + (c.send_mailbox ? '. Home address: ' + esc(mbAddr(c.send_mailbox)) : '') + '.</div>';
+    return '<div class="timeline">' + t.map((m) => '<div class="tl ' + (m.dir === 'in' ? 'in' : 'out') + '"><div class="meta">' + fmtDate(String(m.at || '').slice(0, 10)) + ' · ' + (m.dir === 'in' ? 'they wrote to ' : 'you wrote from ') + esc(m.address || mbAddr(m.mailbox)) + '</div><div><b>' + esc(m.subject || '') + '</b></div>' + (m.body ? '<div class="msg">' + esc(m.body) + '</div>' : '') + '</div>').join('') + '</div>';
+  }
+
   function renderDrawer() {
     const root = $('#drawer-root');
     const c = S.drawer ? contactByKey(S.drawer) : null;
@@ -554,8 +608,9 @@
       '<dt>Added</dt><dd>' + fmtDate(c.added_on) + ' · ' + esc(c.source || '') + '</dd></dl></div>' +
       (c.pending_message ? '<div class="section"><h3>Draft waiting</h3>' + (c.pending_subject ? '<div><b>Subject:</b> ' + esc(c.pending_subject) + '</div>' : '') + '<div class="draft">' + esc(c.pending_message) + '</div><div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' +
         act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') +
-        (canEmail(c) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
+        (canEmail(c) ? '<label class="field" for="d-from" style="min-width:220px">Send from<select id="d-from">' + fromOptionsHtml(c.send_mailbox || '', c.send_mailbox ? 'Home address: ' + mbAddr(c.send_mailbox) : 'Automatic (campaign address)') + '</select></label><button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
         (c.phone ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, c.pending_message)) + '">Send on WhatsApp</a>' : '') + '</div></div>' : '') +
+      '<div class="section"><h3>Email conversation</h3>' + threadHtml(c) + '</div>' +
       (notes && c.status === 'READY_FOR_CONNECTION' ? '<div class="section"><h3>Connection notes</h3><div class="notes">' + notes + '</div></div>' : '') +
       '<div class="section"><h3>History</h3>' + (hist.length ? '<div class="timeline">' + hist.map((i) => '<div class="tl ' + (i.direction === 'inbound' ? 'in' : (i.direction === 'outbound' ? 'out' : '')) + '"><div class="meta">' + fmtDate(i.interaction_date) + ' · ' + esc(i.channel) + ' · ' + esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' · ' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) : '') + '</div>' + (i.message ? '<div class="msg">' + esc(i.message) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="faint">Nothing logged yet.</div>') + '</div>' +
       (isDnc(c) ? '' : '<form class="panel section" id="reply-form"><h3>Log their reply</h3><p class="faint" style="margin:0">Paste what they said. The AI classifies it, moves the stage and drafts your answer.</p>' +
@@ -748,7 +803,7 @@
 
   // ---------- CAMPAIGNS ----------
   const CAMP_FIELDS = [
-    ['campaign_name', 'Name', 'text'], ['category', 'Category', 'cat'], ['relationship_type', 'Relationship type', 'text'], ['sender_identity', 'Write as', 'identity'],
+    ['campaign_name', 'Name', 'text'], ['category', 'Category', 'cat'], ['relationship_type', 'Relationship type', 'text'], ['sender_identity', 'Write as', 'identity'], ['sender', 'Send emails from', 'sender'],
     ['target_count', 'Target number of people', 'number'], ['daily_limit', 'LinkedIn requests per day', 'number'], ['min_score', 'Minimum AI score (0-100)', 'number'], ['countries', 'Countries (comma separated)', 'text'],
     ['purpose', 'Purpose: why you want these relationships', 'area'], ['target_profile', 'Ideal person (roles, organisations)', 'area'], ['keywords', 'Keywords (comma separated)', 'area'],
     ['my_context', 'About you for this campaign (the AI uses this when writing)', 'area'], ['search_queries', 'Search phrases for discovery (one per line, e.g. "multispecialty hospital Bhubaneswar")', 'area'],
@@ -766,6 +821,7 @@
         const v = c[k] === undefined || c[k] === null ? '' : c[k];
         if (type === 'area') return '<label class="field span" for="cf-' + k + '">' + label + '<textarea id="cf-' + k + '" style="min-height:70px">' + esc(v) + '</textarea></label>';
         if (type === 'cat') return '<label class="field" for="cf-' + k + '">' + label + '<select id="cf-' + k + '">' + cats.map((x) => '<option' + (x === v ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select></label>';
+        if (type === 'sender') return '<label class="field" for="cf-' + k + '">' + label + '<select id="cf-' + k + '">' + [['', 'Automatic (researcher: kn0733, else info@negotrip.com)'], ['B2B', 'B2B: rotate the 8 b2btourdeals addresses'], ['B2C', 'B2C: info@negotrip.com'], ['Research', 'Research: kn0733@gmail.com'], ['Individual', 'Individual: kn0733@gmail.com']].map((o) => '<option value="' + o[0] + '"' + (o[0] === v ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '<optgroup label="One fixed address">' + MAILBOXES.map((m) => '<option value="' + m[1] + '"' + (m[1] === v ? ' selected' : '') + '>' + esc(m[1]) + '</option>').join('') + '</optgroup></select></label>';
         if (type === 'identity') return '<label class="field" for="cf-' + k + '">' + label + '<select id="cf-' + k + '"><option value="business"' + (v !== 'academic' ? ' selected' : '') + '>Founder of NegoTrip</option><option value="academic"' + (v === 'academic' ? ' selected' : '') + '>Researcher (no selling)</option></select></label>';
         return '<label class="field" for="cf-' + k + '">' + label + '<input id="cf-' + k + '" type="' + type + '" value="' + esc(v) + '"></label>';
       };
@@ -1029,7 +1085,7 @@
   }
 
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete]');
+    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete],[data-inboxreply],[data-inboxdone]');
     if (!t) return;
     if (t.hasAttribute('data-run')) { runJob(t.getAttribute('data-run'), t.getAttribute('data-camp') ? { campaign_code: t.getAttribute('data-camp'), limit: 12 } : {}, t); return; }
     if (t.hasAttribute('data-campedit')) { S.campEdit = t.getAttribute('data-campedit') || null; render(); window.scrollTo(0, 0); return; }
@@ -1041,13 +1097,27 @@
       api('content_delete', { content_id: id }).then((j) => { toast(j.message || 'Deleted.'); S.libEdit = null; return load(true); }).catch((er) => toast(er.message, true));
       return;
     }
+    if (t.hasAttribute('data-inboxreply') || t.hasAttribute('data-inboxdone')) {
+      const id = t.getAttribute('data-inboxreply') || t.getAttribute('data-inboxdone');
+      const m = (S.inbox || []).find((x) => x.gmail_id === id); if (!m) return;
+      if (t.hasAttribute('data-inboxdone')) { t.disabled = true; inboxApi('done', { gmail_id: id }).then(() => { S.inbox = S.inbox.filter((x) => x.gmail_id !== id); render(); }).catch((er) => { toast(er.message, true); t.disabled = false; }); return; }
+      const ta = document.getElementById('ib-' + id); const body = ta ? ta.value.trim() : '';
+      if (!body) { toast('Write your reply first.', true); if (ta) ta.focus(); return; }
+      if (!confirm('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?')) return;
+      t.disabled = true;
+      inboxApi('reply', { person_key: m.person_key, gmail_id: id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, subject: m.subject, body: body })
+        .then((j) => { toast(j.message || 'Sent.'); S.inbox = S.inbox.filter((x) => x.gmail_id !== id); delete S.threads[m.person_key]; render(); })
+        .catch((er) => { toast(er.message, true); t.disabled = false; });
+      return;
+    }
     if (t.hasAttribute('data-sendmail')) {
       const c = contactByKey(t.getAttribute('data-sendmail')); if (!c) return;
       if (/\[[^\]]{2,80}\]/.test(c.pending_message || '')) { toast('The draft still has a [placeholder]. Edit it in your email app or fill it first; it will not be sent with placeholders.', true); return; }
-      if (!confirm('Send this email now to ' + c.email + ' from your Gmail? An unsubscribe line is added at the bottom.')) return;
+      const fsel = document.getElementById('d-from'); const mbox = fsel && S.drawer === c.person_key ? fsel.value : '';
+      if (!confirm('Send this email now to ' + c.email + ' from ' + (mbox ? mbAddr(mbox) : (c.send_mailbox ? mbAddr(c.send_mailbox) : 'the campaign\'s address')) + '? An unsubscribe line is added at the bottom.')) return;
       if (S.mode === 'demo') { toast('Demo mode: nothing was sent.'); return; }
       t.disabled = true;
-      api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '' }).then((j) => { toast(j.message || 'Sent.'); return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
+      api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '', mailbox: mbox }).then((j) => { toast(j.message || 'Sent.'); delete S.threads[c.person_key]; return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
       return;
     }
     if (t.hasAttribute('data-delete')) {
