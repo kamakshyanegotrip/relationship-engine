@@ -94,7 +94,11 @@
   const campaigns = () => (S.data ? S.data.campaigns : []);
   const campaignName = (code) => { const c = campaigns().find((x) => x.campaign_code === code); return c ? c.campaign_name : (code || '—'); };
   const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').slice(0, 20);
-  const waLink = (ph) => { let d = String(ph || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return 'https://wa.me/' + d; };
+  const waLink = (ph, text) => { let d = String(ph || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return 'https://wa.me/' + d + (text ? '?text=' + encodeURIComponent(text) : ''); };
+  const hasPlaceholder = (t) => /\[[^\]]{2,80}\]/.test(t || '');
+  const calLink = (c) => { const t = new Date(); t.setDate(t.getDate() + 3); t.setHours(11, 0, 0, 0); const e = new Date(t.getTime() + 30 * 60000); const f = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent('Call: ' + (c.full_name || '') + (c.organization ? ' (' + c.organization + ')' : '')) + '&dates=' + f(t) + '/' + f(e) + '&details=' + encodeURIComponent((c.recommended_action || '') + '\n' + (c.linkedin_url || '')) + (c.email ? '&add=' + encodeURIComponent(c.email) : ''); };
+  const CARD_API = 'https://n8n.assignover.in/webhook/pre-card';
   const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
   function campOptionsHtml(selected, allLabel) {
     const groups = {};
@@ -388,6 +392,8 @@
       '<div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' + liBtn(c) +
       act(c, isReply ? 'replied' : 'fu_linkedin', isReply ? 'I sent this reply' : 'Sent on LinkedIn', 'good') +
       (hasEmail && !isReply ? act(c, 'fu_email', 'Create Gmail draft') : '') +
+      (canEmail(c) && !hasPlaceholder(c.pending_message) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send email now</button>' : '') +
+      (c.phone ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, c.pending_message)) + '">Send on WhatsApp</a>' : '') +
       '<button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">They replied</button>' + act(c, 'snooze', 'Snooze 7 days', 'ghost') + act(c, 'dnc', 'Do not contact', 'ghost bad') + '</div></article>';
   }
 
@@ -523,7 +529,7 @@
       '<div class="card-head"><div class="who"><h2>' + esc(c.full_name) + '</h2><span class="role">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span></div>' +
       '<button type="button" class="btn ghost" data-close aria-label="Close">Close</button></div>' +
       '<div class="actions">' + statusPill(c.status) + '<span class="pill ' + esc(c.priority || 'C') + '">Priority ' + esc(c.priority || 'C') + ' · ' + esc(c.priority_score) + '</span><span class="pill">' + esc(campaignName(c.campaign_code)) + '</span></div>' +
-      '<div class="actions">' + liBtn(c) + (isDnc(c) ? '' : quick) + '</div>' +
+      '<div class="actions">' + liBtn(c) + (isDnc(c) ? '' : quick) + '<a class="btn sm ghost" target="_blank" rel="noopener" href="' + esc(calLink(c)) + '">Schedule a call</a>' + '</div>' +
       (c.why_this_person ? '<div class="why"><b>Why this person:</b> ' + esc(c.why_this_person) + '</div>' : '') +
       (c.opportunity_type ? '<div class="opp"><b>Opportunity · ' + esc(String(c.opportunity_type).replace(/_/g, ' ')) + ':</b> ' + esc(c.opportunity_note) + '</div>' : '') +
       (c.recommended_action && c.recommended_action.length > 12 ? '<div class="faint"><b>Suggested next step:</b> ' + esc(c.recommended_action) + '</div>' : '') +
@@ -548,7 +554,8 @@
       '<dt>Added</dt><dd>' + fmtDate(c.added_on) + ' · ' + esc(c.source || '') + '</dd></dl></div>' +
       (c.pending_message ? '<div class="section"><h3>Draft waiting</h3>' + (c.pending_subject ? '<div><b>Subject:</b> ' + esc(c.pending_subject) + '</div>' : '') + '<div class="draft">' + esc(c.pending_message) + '</div><div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' +
         act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') +
-        (canEmail(c) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') + '</div></div>' : '') +
+        (canEmail(c) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
+        (c.phone ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, c.pending_message)) + '">Send on WhatsApp</a>' : '') + '</div></div>' : '') +
       (notes && c.status === 'READY_FOR_CONNECTION' ? '<div class="section"><h3>Connection notes</h3><div class="notes">' + notes + '</div></div>' : '') +
       '<div class="section"><h3>History</h3>' + (hist.length ? '<div class="timeline">' + hist.map((i) => '<div class="tl ' + (i.direction === 'inbound' ? 'in' : (i.direction === 'outbound' ? 'out' : '')) + '"><div class="meta">' + fmtDate(i.interaction_date) + ' · ' + esc(i.channel) + ' · ' + esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' · ' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) : '') + '</div>' + (i.message ? '<div class="msg">' + esc(i.message) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="faint">Nothing logged yet.</div>') + '</div>' +
       (isDnc(c) ? '' : '<form class="panel section" id="reply-form"><h3>Log their reply</h3><p class="faint" style="margin:0">Paste what they said. The AI classifies it, moves the stage and drafts your answer.</p>' +
@@ -679,6 +686,12 @@
         (S.mode === 'demo' ? '<div class="banner"><span>Connect your access key in Settings first; then click the bookmark again on the profile.</span></div>' : '') +
         '<div class="actions"><button class="btn primary" type="submit"' + (S.mode === 'demo' ? ' disabled' : '') + '>Add and qualify</button><button class="btn ghost" type="button" id="cap-cancel">Discard</button></div></form>';
     }
+    h += '<form class="panel section" id="card-form"><div class="panel-head" style="margin:0"><h2>Scan business cards</h2><span class="faint">works on phone · photo of one or several visiting cards</span></div>' +
+      '<p class="muted" style="margin:0">Take a clear photo (or pick photos) of visiting cards from an event. The AI reads name, title, organisation, email, mobile and website, then scores each person like any other contact.</p>' +
+      '<div class="form-grid"><label class="field" for="card-file">Photos<input id="card-file" type="file" accept="image/*" capture="environment" multiple required></label>' +
+      '<label class="field" for="card-camp">Campaign' + campSelect('card-camp') + '</label>' +
+      '<label class="field span" for="card-note">Where you met (optional, added to their notes)<input id="card-note" placeholder="e.g. Met at FICCI Heal 2026, Delhi"></label></div>' +
+      '<div class="actions"><button class="btn primary" type="submit">Read cards and add</button><span class="faint" id="card-status"></span></div></form>';
     h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Save from LinkedIn with the Chrome extension</h2><span class="faint">recommended · set up once on your computer</span></div>' +
       '<p class="muted" style="margin:0">The extension adds a <b>+ Save</b> button next to every person in a LinkedIn people search, and a Save panel on every profile page. One click adds the person to the campaign you picked; the AI scores them and writes the notes.</p>' +
       '<ol class="steps"><li><a class="btn sm primary" href="relationship-engine-extension.zip" download>Download the extension (.zip)</a> and unzip it. You get a folder called <b>extension</b>.</li>' +
@@ -785,7 +798,7 @@
       h += '<form class="panel section" id="lib-form" data-id="' + esc(e.content_id || '') + '"><div class="panel-head" style="margin:0"><h2>' + (e.content_id ? 'Edit item' : 'Add item') + '</h2><button type="button" class="btn ghost" data-libedit="">Close</button></div><div class="form-grid">' +
         '<label class="field span" for="lf-title">Title<input id="lf-title" required value="' + esc(e.title || '') + '" placeholder="e.g. Our 2026 paper on patient trust in medical tourism"></label>' +
         '<label class="field span" for="lf-url">Link<input id="lf-url" value="' + esc(e.url || '') + '" placeholder="https://…"></label>' +
-        '<label class="field" for="lf-kind">Type<select id="lf-kind">' + ['paper', 'article', 'itinerary', 'offer', 'event', 'case study', 'video', 'note'].map((k) => '<option' + (k === (e.kind || 'paper') ? ' selected' : '') + '>' + k + '</option>').join('') + '</select></label>' +
+        '<label class="field" for="lf-kind">Type<select id="lf-kind">' + ['paper', 'article', 'itinerary', 'offer', 'event', 'meeting', 'case study', 'video', 'note'].map((k) => '<option' + (k === (e.kind || 'paper') ? ' selected' : '') + '>' + k + '</option>').join('') + '</select></label>' +
         '<label class="field" for="lf-aud">Who it suits<input id="lf-aud" value="' + esc(e.audience || '') + '" placeholder="academic, healthcare, travel_trade, corporate, government, all"></label>' +
         '<label class="field span" for="lf-sum">Short summary (what the AI tells people about it)<textarea id="lf-sum" style="min-height:80px">' + esc(e.summary || '') + '</textarea></label>' +
         '<label class="field"><span><input type="checkbox" id="lf-active"' + (e.active === false ? '' : ' checked') + '> Active</span></label></div>' +
@@ -793,6 +806,7 @@
     }
     h += items.length ? '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Item</th><th>Type</th><th>Suits</th><th></th></tr></thead><tbody>' + items.map((x) => '<tr' + (x.active === false ? ' style="opacity:.55"' : '') + '><td><b>' + esc(x.title) + '</b>' + (x.url ? ' <a href="' + esc(x.url) + '" target="_blank" rel="noopener">link</a>' : '') + '<div class="faint">' + esc(String(x.summary || '').slice(0, 140)) + '</div></td><td>' + esc(x.kind) + '</td><td>' + esc(x.audience) + '</td><td><button type="button" class="btn sm ghost" data-libedit="' + esc(x.content_id) + '">Edit</button></td></tr>').join('') + '</tbody></table></div>'
       : '<div class="empty">Nothing here yet. Add your papers, blog posts, sample itineraries or upcoming events. Follow-up drafts will then offer them to the right people instead of leaving [placeholders].</div>';
+    h += '<p class="hint-line" style="margin-top:10px">Tip: add one item of type <b>meeting</b> with your booking link (for example a Google Calendar appointment page). When a follow-up proposes a call, the AI includes that link so people can pick a time.</p>';
     return h;
   }
 
@@ -944,6 +958,31 @@
         if (await sendProspects(S.bulkRows.slice(0, 200), e.target)) { S.bulkRows = []; render(); }
       });
     }
+    const cardf = $('#card-form');
+    if (cardf) cardf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = [...($('#card-file').files || [])].slice(0, 10); if (!files.length) return;
+      if (S.mode === 'demo') { toast('Demo mode: connect your key to scan real cards.'); return; }
+      const camp = $('#card-camp').value; const note = $('#card-note').value.trim(); remember(camp);
+      const b = cardf.querySelector('button[type=submit]'); const st = $('#card-status'); b.disabled = true;
+      const shrink = (file) => new Promise((res, rej) => { const img = new Image(); const url = URL.createObjectURL(file);
+        img.onload = () => { const m = 1600, s = Math.min(1, m / Math.max(img.width, img.height)); const cv = document.createElement('canvas'); cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
+          cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(url); res(cv.toDataURL('image/jpeg', 0.85).split(',')[1]); };
+        img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not open ' + file.name)); }; img.src = url; });
+      const done = [];
+      for (let i = 0; i < files.length; i++) {
+        st.textContent = 'Reading photo ' + (i + 1) + ' of ' + files.length + '…';
+        try {
+          const image = await shrink(files[i]);
+          const r = await fetch(CARD_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'card', payload: { image: image, mime: 'image/jpeg', campaign_code: camp, note: note } })) });
+          let j = null; try { j = await r.json(); } catch (er) { j = null; }
+          if (!r.ok || !j) throw new Error((j && j.message) || 'The scanner answered with status ' + r.status);
+          done.push(j.message); toast(j.message, j.ok === false);
+        } catch (er) { toast(er.message, true); }
+      }
+      st.textContent = done.length ? 'Done. New people appear in about a minute.' : ''; b.disabled = false; cardf.reset();
+      setTimeout(() => load(true), 60000);
+    });
     const cfm = $('#camp-form');
     if (cfm) cfm.addEventListener('submit', async (e) => {
       e.preventDefault();
