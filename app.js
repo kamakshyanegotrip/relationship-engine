@@ -148,6 +148,13 @@
   }
   const contactByKey = (k) => (S.data ? S.data.contacts.find((c) => c.person_key === k) : null);
   const canEmail = (c) => !!(c && c.email && ['verified', 'likely', 'found_unverified', 'provided_unverified', 'known'].includes(c.email_status) && !isDnc(c) && c.unsubscribed !== true);
+  const igLine = (c) => {
+    if (c.ig_status !== 'ok') return '<span class="faint">' + (c.ig_status === 'personal or not found' ? 'Personal or private account, stats not available' : 'Could not check yet') + (c.ig_checked_on ? ' (checked ' + esc(fmtDate(c.ig_checked_on)) + ')' : '') + '</span>';
+    const days = c.ig_last_post ? Math.round((Date.now() - new Date(c.ig_last_post).getTime()) / 86400000) : null;
+    const pill = (t, col) => ' <span class="pill" style="border-color:' + col + ';color:' + col + '">' + t + '</span>';
+    const act = days === null ? '' : days <= 14 ? pill('Active', '#1a7f37') : days <= 90 ? pill('Posts monthly', '#2f81f7') : pill('Quiet', '#9a6700');
+    return '<b>' + esc(num(c.ig_followers).toLocaleString('en-IN')) + '</b> followers · ' + esc(num(c.ig_posts).toLocaleString('en-IN')) + ' posts' + (c.ig_last_post ? ' · last post ' + esc(fmtDate(c.ig_last_post)) : '') + act + '<div class="faint" style="font-size:12px">Checked ' + esc(fmtDate(c.ig_checked_on)) + ' via the official Instagram API.</div>';
+  };
   const JOBS = [
     ['discover', 'Discover new people', 'Searches OpenAlex, Google Places, listed websites (and Google, once Serper is added) for campaigns with auto-discovery on. Also runs every Monday 6:00.'],
     ['enrich', 'Research profiles', 'Reads publications and organisation websites for up to 10 new people, writes a profile and sends them for qualification. Also runs daily 6:40.'],
@@ -155,6 +162,7 @@
     ['monitor', 'Monitor & spot opportunities', 'Looks for new publications and good timing, flags research, B2B, referral and network opportunities. Also runs Wed and Sat 7:10.'],
     ['report', 'Email me the weekly report', 'Funnel, campaign targets, opportunities and relationships going cold. Also every Monday 8:25.'],
     ['social', 'Find social pages', 'Reads each organisation website (and Google, when needed) for Facebook, Instagram, WhatsApp and a general company email such as info@. Also runs daily 8:00.'],
+    ['igstats', 'Instagram stats', 'Looks up followers, posts and last post date for Instagram business accounts found on organisation pages (official Meta API). Also runs daily 8:30.'],
     ['phones', 'Check phone numbers', 'Cleans every number to +91 format and marks it mobile, landline or invalid. WhatsApp buttons hide for landlines. Also runs daily 7:30.'],
     ['sheet', 'Sync Google Sheet', 'Refreshes the mirror sheet and imports rows from its Import tab. Also every 6 hours.']
   ];
@@ -167,6 +175,14 @@
         const r = await fetch('https://n8n.assignover.in/webhook/pre-social', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { limit: 30 } })) });
         const j = await r.json(); toast((j && j.message) || 'Started.'); setTimeout(() => load(true), 240000);
       } catch (e) { toast('Could not start the social check.', true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
+      return;
+    }
+    if (job === 'igstats') {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch('https://n8n.assignover.in/webhook/pre-ig-stats', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { limit: 40 } })) });
+        const j = await r.json(); toast((j && j.message) || 'Started.'); setTimeout(() => load(true), 90000);
+      } catch (e) { toast('Could not start the Instagram check.', true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
       return;
     }
     if (job === 'phones') {
@@ -698,6 +714,7 @@
         c.instagram_handle ? '<a href="https://www.instagram.com/' + esc(encodeURIComponent(c.instagram_handle)) + '/" target="_blank" rel="noopener">Instagram @' + esc(c.instagram_handle) + '</a>' : '',
         c.org_whatsapp ? '<a href="' + esc(waLink(c.org_whatsapp)) + '" target="_blank" rel="noopener">Company WhatsApp</a>' : '',
         c.org_email ? '<a class="mono" href="mailto:' + esc(c.org_email) + '">' + esc(c.org_email) + '</a> <span class="faint">(company)</span>' : ''].filter(Boolean).join(' · ') + (c.social_source ? '<div class="faint" style="font-size:12px">Found via ' + esc(c.social_source) + '. Open and message from your own accounts.</div>' : '') + '</dd>' : '') +
+      (c.ig_status ? '<dt>Instagram</dt><dd>' + igLine(c) + '</dd>' : '') +
       (c.maps_url || c.rating ? '<dt>Google Maps</dt><dd>' + (c.rating ? '<b>' + esc(Number(c.rating).toFixed(1)) + '★</b> <span class="faint">(' + esc(num(c.review_count || 0)) + ' reviews)</span> ' : '') + (c.maps_url ? '<a href="' + esc(c.maps_url) + '" target="_blank" rel="noopener">Open in Maps</a>' : '') + '</dd>' : '') +
       '<dt>Interests</dt><dd>' + esc(c.interests || '—') + '</dd>' +
       '<dt>Scores</dt><dd>' + scoreLine(c) + '</dd>' +
