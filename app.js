@@ -13,6 +13,8 @@
   const S = {
     apiUrl: store.get('api', DEFAULT_API),
     key: store.get('key', ''),
+    sid: store.get('sid', ''),
+    me: null,
     data: null,
     inbox: [],
     threads: {},
@@ -52,6 +54,7 @@
 
   // ---------- helpers ----------
   const $ = (sel, root) => (root || document).querySelector(sel);
+  const cred = () => (S.sid ? { sid: S.sid } : { key: S.key });
   const esc = (s) => String(s === undefined || s === null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const todayISO = () => { const t = new Date(); t.setMinutes(t.getMinutes() - t.getTimezoneOffset()); return t.toISOString().slice(0, 10); };
@@ -172,7 +175,7 @@
     if (job === 'social') {
       if (btn) btn.disabled = true;
       try {
-        const r = await fetch('https://n8n.assignover.in/webhook/pre-social', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { limit: 30 } })) });
+        const r = await fetch('https://n8n.assignover.in/webhook/pre-social', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: 'run', payload: { limit: 30 } })) });
         const j = await r.json(); toast((j && j.message) || 'Started.'); setTimeout(() => load(true), 240000);
       } catch (e) { toast('Could not start the social check.', true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
       return;
@@ -180,7 +183,7 @@
     if (job === 'igstats') {
       if (btn) btn.disabled = true;
       try {
-        const r = await fetch('https://n8n.assignover.in/webhook/pre-ig-stats', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { limit: 40 } })) });
+        const r = await fetch('https://n8n.assignover.in/webhook/pre-ig-stats', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: 'run', payload: { limit: 40 } })) });
         const j = await r.json(); toast((j && j.message) || 'Started.'); setTimeout(() => load(true), 90000);
       } catch (e) { toast('Could not start the Instagram check.', true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
       return;
@@ -188,7 +191,7 @@
     if (job === 'phones') {
       if (btn) btn.disabled = true;
       try {
-        const r = await fetch(PHONE_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { all: true } })) });
+        const r = await fetch(PHONE_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: 'run', payload: { all: true } })) });
         const j = await r.json(); if (!j || j.ok === false) throw new Error((j && j.message) || 'The phone check did not answer.');
         toast(j.message || 'Phones checked.'); load(true);
       } catch (e) { toast(e.message, true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 3000); }
@@ -201,7 +204,7 @@
 
   // ---------- API ----------
   async function api(op, payload) {
-    const body = 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} }));
+    const body = 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: op, payload: payload || {} }));
     let res;
     try {
       res = await fetch(S.apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: body });
@@ -210,22 +213,24 @@
     }
     let j = null;
     try { j = await res.json(); } catch (e) { j = null; }
-    if (res.status === 401) throw new Error('The access key was rejected. Re-enter it in Settings.');
+    if (res.status === 401 || (j && j.code === 'signin')) { if (S.sid) { authLost(); throw new Error('Please sign in again.'); } throw new Error('The access key was rejected. Re-enter it in Settings or sign in with Google.'); }
     if (!res.ok || !j) throw new Error((j && j.message) || 'n8n answered with status ' + res.status + '.');
     if (j.ok === false) throw new Error(j.message || 'The request did not go through.');
     return j;
   }
 
   async function inboxApi(op, payload) {
-    const r = await fetch(INBOX_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    const r = await fetch(INBOX_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: op, payload: payload || {} })) });
     let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (j && j.code === 'signin') { authLost(); throw new Error('Please sign in again.'); }
     if (!r.ok || !j) throw new Error((j && j.message) || 'The inbox answered with status ' + r.status + '.');
     if (j.ok === false) throw new Error(j.message || 'The inbox request did not go through.');
     return j;
   }
   async function rcApi(op, payload) {
-    const r = await fetch(RECONNECT_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    const r = await fetch(RECONNECT_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: op, payload: payload || {} })) });
     let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (j && j.code === 'signin') { authLost(); throw new Error('Please sign in again.'); }
     if (!r.ok || !j) throw new Error((j && j.message) || 'The reconnect service answered with status ' + r.status + '.');
     if (j.ok === false) throw new Error(j.message || 'The request did not go through.');
     return j;
@@ -245,7 +250,8 @@
   }
 
   async function load(quiet) {
-    if (!S.key) {
+    if (!S.key && !S.sid) {
+      S.me = null;
       S.mode = 'demo';
       S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.data.content = S.data.content || []; S.data.suppressed = 0;
       S.lastSync = null;
@@ -254,6 +260,7 @@
     }
     S.loading = true; if (!quiet) renderChrome();
     try {
+      if (!S.me) await loadMe();
       const j = await api('bootstrap');
       S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [], content: j.content || [], suppressed: j.suppressed || 0 };
       S.mode = 'live'; S.error = ''; S.lastSync = new Date(); S.threads = {};
@@ -370,8 +377,11 @@
     { id: 'library', label: 'Library' },
     { id: 'add', label: 'Add people' },
     { id: 'guide', label: 'How it works' },
+    { id: 'team', label: 'Team' },
     { id: 'settings', label: 'Settings' }
   ];
+  const viewAllowed = (id) => { if (!S.me) return id !== 'team'; if (id === 'team') return can('members') || can('approve'); if (id === 'bulk') return can('bulk_draft') || can('approve'); if (id === 'add') return can('import') || can('edit_contacts'); return true; };
+  const navViews = () => VIEWS.filter((v) => viewAllowed(v.id));
   try {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
       '.onboard{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:var(--radius);padding:18px;display:flex;flex-direction:column;gap:12px}' +
@@ -403,19 +413,19 @@
   }
   function renderChrome() {
     const todayCount = S.data ? queueList().queue.length + checksList().length + draftsList().length : 0;
-    const navHtml = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '><span>' + v.label + '</span>' +
+    const navHtml = navViews().map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '><span>' + v.label + '</span>' +
       (v.id === 'today' && todayCount ? '<span class="count num">' + todayCount + '</span>' : '') + '</button>').join('');
     $('#nav').innerHTML = navHtml;
-    $('#mobile-nav').innerHTML = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
+    $('#mobile-nav').innerHTML = navViews().map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
       (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : (v.id === 'campaigns' ? 'Camps' : (v.id === 'bulk' ? 'Bulk' : v.label)))) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
 
     const dot = $('#conn-dot'); const txt = $('#conn-text');
     dot.className = 'dot ' + (S.mode === 'live' ? 'live' : 'demo');
-    txt.textContent = S.loading ? 'Syncing…' : (S.mode === 'live' ? 'Connected to n8n' : 'Demo data');
+    txt.textContent = S.loading ? 'Syncing…' : (S.mode === 'live' ? (S.me ? S.me.name + ' · ' + (ROLE_LABEL[S.me.role] || S.me.role) : 'Connected to n8n') : 'Demo data');
     $('#sync-text').textContent = S.lastSync ? 'Synced ' + S.lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '';
 
     $('#banner').innerHTML = S.mode === 'demo'
-      ? '<div class="banner"><span><b>Demo mode.</b> You are looking at sample people, and buttons change nothing. Add your access key to load your real contacts.</span><button class="btn sm primary" data-nav="settings" type="button">Connect</button></div>'
+      ? '<div class="banner"><span><b>Demo mode.</b> You are looking at sample people, and buttons change nothing. Sign in with Google to load your real contacts.</span><button class="btn sm primary" data-nav="settings" type="button">Sign in</button></div>'
       : (S.error ? '<div class="banner"><span>' + esc(S.error) + '</span><button class="btn sm" data-refresh type="button">Try again</button></div>' : '');
   }
 
@@ -733,6 +743,7 @@
         '<label class="field" for="r-msg">What they said<textarea id="r-msg" required></textarea></label>' +
         '<label class="field" for="r-notes">Your notes (optional)<input id="r-notes" type="text"></label>' +
         '<div><button class="btn primary" type="submit">Log reply</button></div></form>') +
+      assignPanel(c) +
       '<form class="panel section" id="edit-form"><h3>Edit details</h3><div class="form-grid">' +
       '<label class="field" for="e-title">Job title<input id="e-title" value="' + esc(c.job_title) + '"></label>' +
       '<label class="field" for="e-org">Organisation<input id="e-org" value="' + esc(c.organization) + '"></label>' +
@@ -746,7 +757,7 @@
       '<div class="panel section"><h3>Relationship status</h3><div class="actions">' +
         (isDnc(c) || ['DECLINED', 'NOT_RELEVANT', 'IGNORED'].includes(c.status) ? act(c, 'reopen', 'Reopen relationship') : act(c, 'collab', 'Mark as collaboration', 'good') + act(c, 'dnc', 'Do not contact', 'ghost bad')) +
         (c.email && c.unsubscribed !== true ? act(c, 'unsub', 'Unsubscribe from email', 'ghost') : '') +
-        '<button type="button" class="btn sm ghost bad" data-delete="' + esc(c.person_key) + '">Delete permanently</button></div></div>' +
+        (can('delete') ? '<button type="button" class="btn sm ghost bad" data-delete="' + esc(c.person_key) + '">Delete permanently</button>' : '') + '</div></div>' +
       '</aside>';
 
     const rf = $('#reply-form');
@@ -760,6 +771,11 @@
         toast(j.message); rf.reset();
         setTimeout(() => load(true), 35000);
       } catch (err) { toast(err.message, true); } finally { b.disabled = false; }
+    });
+    const asf = $('#assign-form');
+    if (asf) asf.addEventListener('submit', async (e) => {
+      e.preventDefault(); const b = asf.querySelector('button[type=submit]'); b.disabled = true;
+      try { const j = await api('assign', { person_key: c.person_key, assigned_to: $('#as-who').value, send_mailbox: $('#as-mb').value }); toast(j.message || 'Saved.'); await load(true); } catch (err) { toast(err.message, true); b.disabled = false; }
     });
     $('#edit-form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -969,8 +985,9 @@
     rows: { bucket: '', filter: 'all', q: '', offset: 0, total: 0, list: [] }, bucketEdit: null, importFor: '', imp: null, fromFor: '',
     edit: null, detail: '', sends: { filter: 'all', list: [], total: 0 }, sample: [], sampleBucket: '', sampleIdx: 0 };
   const bkPost = async (url, op, payload) => {
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: op, payload: payload || {} })) });
     let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (j && j.code === 'signin') { authLost(); throw new Error('Please sign in again.'); }
     if (!r.ok || !j) throw new Error((j && j.message) || 'The bulk service answered with status ' + r.status + '.');
     if (j.ok === false) throw new Error(j.message || 'The request did not go through.');
     return j;
@@ -1066,7 +1083,7 @@
       const act = c.status === 'running' ? '<button class="btn sm" type="button" data-bk="pause" data-id="' + esc(c.campaign_id) + '">Pause</button>'
         : (c.status === 'done' ? '' : '<button class="btn sm primary" type="button" data-bk="start" data-id="' + esc(c.campaign_id) + '">' + (c.status === 'paused' ? 'Resume' : 'Start') + '</button>');
       return '<tr><td><b>' + esc(c.name) + '</b><div class="faint">' + esc(b.name || c.bucket_id) + ' · ' + steps + ' email' + (steps > 1 ? 's' : '') + ' · ' + esc(c.sendable || 0) + ' sendable' + (c.notes ? '<br><span style="color:#9a6700">' + esc(c.notes) + '</span>' : '') + '</div></td>' +
-        '<td>' + bkPill(c.status) + '</td><td class="r num">' + esc(s.people || 0) + (s.today ? '<div class="faint">' + s.today + ' today</div>' : '') + '</td><td class="r num">' + pct(s.opened, s.people) + '</td><td class="r num">' + pct(s.replied, s.people) + '</td><td class="r num">' + esc((s.bounced || 0) + ' / ' + (s.unsubscribed || 0)) + '</td>' +
+        '<td>' + bkPill(c.status) + (c.approval_status === 'pending' ? '<div><span class="pill" style="border-color:#9a6700;color:#9a6700">Waiting for approval</span></div>' : (c.approval_status === 'rejected' ? '<div><span class="pill" style="border-color:#cf222e;color:#cf222e">Sent back</span></div>' : '')) + '</td><td class="r num">' + esc(s.people || 0) + (s.today ? '<div class="faint">' + s.today + ' today</div>' : '') + '</td><td class="r num">' + pct(s.opened, s.people) + '</td><td class="r num">' + pct(s.replied, s.people) + '</td><td class="r num">' + esc((s.bounced || 0) + ' / ' + (s.unsubscribed || 0)) + '</td>' +
         '<td><div class="actions" style="justify-content:flex-end">' + act + '<button class="btn sm ghost" type="button" data-bk="detail" data-id="' + esc(c.campaign_id) + '">Results</button><button class="btn sm ghost" type="button" data-bk="edit" data-id="' + esc(c.campaign_id) + '">Edit</button></div></td></tr>';
     }).join('');
     return '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Campaign</th><th>Status</th><th class="r">People sent</th><th class="r">Opened</th><th class="r">Replied</th><th class="r">Bounced / unsub</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
@@ -1220,7 +1237,7 @@
       '<div class="actions"><button class="btn primary" type="submit">Save campaign</button>' + (e.campaign_id && e.status !== 'running' ? '<button class="btn" type="button" data-bk="start" data-id="' + esc(e.campaign_id) + '">Save and start</button>' : '') + '</div>' +
       '<p class="hint-line">Every email gets an unsubscribe link and the one-click unsubscribe header Gmail and Yahoo require. Emails go out one by one as plain, personal-looking messages from each mailbox with its signature.</p></div>';
     h += '<div class="panel" style="display:flex;flex-direction:column;gap:10px;position:sticky;top:12px"><div class="panel-head" style="margin:0"><h2>Preview</h2><span class="actions"><button type="button" class="btn sm ghost" data-bk="sprev">‹</button><button type="button" class="btn sm ghost" data-bk="snext">›</button></span></div><div id="bk-preview"></div>' +
-      '<div class="field">Send a test to yourself<div class="actions" style="margin-top:6px"><select id="be-test-to">' + ALL_ADDR.map((a) => '<option' + (a === 'kn0733@gmail.com' ? ' selected' : '') + '>' + esc(a) + '</option>').join('') + '</select><select id="be-test-step"><option value="0">First email</option>' + (e.followups || []).map((f, i) => '<option value="' + (i + 1) + '">Follow-up ' + (i + 1) + '</option>').join('') + '</select><button type="button" class="btn" data-bk="test">Send test</button></div></div></div>';
+      '<div class="field">Send a test to yourself<div class="actions" style="margin-top:6px"><select id="be-test-to">' + (isOwnerMe() ? ALL_ADDR : [S.me.email]).map((a) => '<option' + (a === 'kn0733@gmail.com' ? ' selected' : '') + '>' + esc(a) + '</option>').join('') + '</select><select id="be-test-step"><option value="0">First email</option>' + (e.followups || []).map((f, i) => '<option value="' + (i + 1) + '">Follow-up ' + (i + 1) + '</option>').join('') + '</select><button type="button" class="btn" data-bk="test">Send test</button></div></div></div>';
     return h + '</form>';
   }
   function bkCollect() {
@@ -1484,16 +1501,19 @@
 
   function renderSettings() {
     const th = store.get('theme', 'system');
-    let h = topbar('Settings', 'Connect this app to your n8n Relationship Engine.');
-    h += '<form class="panel section" id="settings-form" style="max-width:640px"><h2>Connection</h2>' +
+    let h = topbar('Settings', 'Sign in, signatures, jobs and appearance.');
+    h += S.me ? whoLine() : '';
+    if (!S.sid) h += signInPanel();
+    if (!S.me || S.me.role === 'owner') h += '<details class="section" style="max-width:640px"><summary class="faint" style="cursor:pointer">Owner access key (old way to connect, being retired)</summary>';
+    if (!S.me || S.me.role === 'owner') h += '<form class="panel section" id="settings-form" style="max-width:640px"><h2>Connection</h2>' +
       '<label class="field" for="s-url">API address<input id="s-url" value="' + esc(S.apiUrl) + '" required></label>' +
       '<label class="field" for="s-key">Access key<input id="s-key" type="password" value="' + esc(S.key) + '" autocomplete="off" placeholder="Paste the key from the PRE-05 workflow"></label>' +
       '<p class="faint" style="margin:0">The key is kept only in this browser. The app code is public on GitHub; your contacts are not, because every request needs this key.</p>' +
-      '<div class="actions"><button class="btn primary" type="submit">Save and connect</button>' + (S.key ? '<button class="btn bad" type="button" id="s-forget">Forget key on this device</button>' : '') + '</div></form>';
-    h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
+      '<div class="actions"><button class="btn primary" type="submit">Save and connect</button>' + (S.key ? '<button class="btn bad" type="button" id="s-forget">Forget key on this device</button>' : '') + '</div></form></details>';
+    if (can('run_jobs')) h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
       JOBS.map((j) => '<div class="panel"><b>' + esc(j[1]) + '</b><span class="faint" style="font-size:12.5px">' + esc(j[2]) + '</span><div><button type="button" class="btn sm primary" data-run="' + j[0] + '">Run</button></div></div>').join('') + '</div>' +
       '<p class="hint-line" style="margin-top:8px">Google Sheet mirror: <a href="' + SHEET_URL + '" target="_blank" rel="noopener">open the sheet</a>. Paste people into its Import tab (keep the header row) and they are added at the next sync.' + (S.data && S.data.suppressed ? ' · ' + S.data.suppressed + ' addresses on the email suppression list.' : '') + '</p></div>';
-    h += sigPanelHtml();
+    if (can('settings')) h += sigPanelHtml();
     if (S.mode === 'live' && (S.reconnect.scan || []).length) {
       h += '<div class="panel section" style="max-width:640px"><h2>Mailbox scan</h2><p class="faint" style="margin:0 0 8px">Every 20 minutes the engine reads a little further back in each mailbox (headers only, no email text), up to two years. New mail is picked up as it arrives.</p><div class="table-wrap"><table><thead><tr><th>Mailbox</th><th>Read back to</th><th>Messages</th></tr></thead><tbody>' +
         S.reconnect.scan.slice().sort((a, b) => String(a.mailbox).localeCompare(String(b.mailbox))).map((x) => '<tr><td>' + esc(MB_NAME[x.mailbox] || x.mailbox) + '</td><td>' + (x.done ? 'Done (2 years)' : esc(fmtDate(x.back_to))) + '</td><td>' + esc(x.seen) + '</td></tr>').join('') + '</tbody></table></div></div>';
@@ -1509,16 +1529,206 @@
     return h;
   }
 
+  // ---------- SIGN-IN & TEAM ----------
+  const AUTH_API = 'https://n8n.assignover.in/webhook/pre-auth';
+  const GOOGLE_CLIENT_ID = '437012493188-lvm5ac1r75tj6uqemitlm3q90d8uua2a.apps.googleusercontent.com';
+  const RIGHT_LABEL = { view: 'See contacts', send: 'Send email', reply: 'Reply in inbox', edit_contacts: 'Edit contacts', delete: 'Delete contacts', import: 'Import / add people', bulk_draft: 'Write bulk campaigns', bulk_edit: 'Edit running bulk campaigns', bulk_start: 'Start bulk campaigns without approval', bulk_pause: 'Pause bulk campaigns', approve: 'Approve bulk campaigns', run_jobs: 'Run background jobs', assign: 'Assign contacts to people', export: 'Export', settings: 'Settings, signatures, campaigns', members: 'Manage team' };
+  const ROLE_LABEL = { owner: 'Owner', manager: 'Manager', staff: 'Staff', viewer: 'Viewer' };
+  const can = (r) => !S.me || (S.me.rights || []).includes(r);
+  const isOwnerMe = () => !S.me || S.me.role === 'owner';
+  const TM = { loaded: false, loading: false, members: [], roleRights: {}, audit: [], auditFor: '', pend: [], camps: [], buckets: [], edit: null, team: null };
+  async function authPost(op, payload, extra) {
+    const r = await fetch(AUTH_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify(Object.assign(cred(), { op: op, payload: payload || {} }, extra || {}))) });
+    let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (!j) throw new Error('The sign-in service answered with status ' + r.status + '.');
+    if (j.ok === false) { if (j.code === 'signin') authLost(); throw new Error(j.message || 'The request did not go through.'); }
+    return j;
+  }
+  function authLost() {
+    if (!S.sid) return;
+    S.sid = ''; S.me = null; store.del('sid');
+    S.data = null; TM.loaded = false; BK.loaded = false;
+    toast('Your sign-in has ended. Please sign in again.', true);
+    load();
+  }
+  async function loadMe() {
+    if (!S.sid && !S.key) { S.me = null; return; }
+    try { const j = await authPost('me'); S.me = j.member || null; } catch (e) { /* keep going; the data calls report the problem */ }
+  }
+  let gsiLoading = null;
+  function loadGsi() {
+    if (window.google && window.google.accounts && window.google.accounts.id) return Promise.resolve();
+    if (gsiLoading) return gsiLoading;
+    gsiLoading = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = () => res(); s.onerror = () => { gsiLoading = null; rej(new Error('Google sign-in could not load. Check the connection.')); }; document.head.appendChild(s); });
+    return gsiLoading;
+  }
+  async function mountGoogleButton() {
+    const box = document.getElementById('g-signin'); if (!box) return;
+    try {
+      await loadGsi();
+      window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential, auto_select: false, cancel_on_tap_outside: true });
+      window.google.accounts.id.renderButton(box, { theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill', width: 280 });
+    } catch (e) { box.innerHTML = '<span class="faint">' + esc(e.message) + '</span>'; }
+  }
+  async function onGoogleCredential(resp) {
+    try {
+      const r = await fetch(AUTH_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ op: 'login', payload: { credential: resp.credential } })) });
+      const j = await r.json();
+      if (!j || !j.ok || !j.sid) throw new Error((j && j.message) || 'Sign-in did not work. Try again.');
+      S.sid = j.sid; store.set('sid', j.sid); S.me = j.member || null;
+      if (S.me && S.me.role !== 'owner') { S.key = ''; store.del('key'); }
+      S.data = null; S.error = ''; BK.loaded = false; TM.loaded = false;
+      toast('Signed in as ' + ((S.me && S.me.name) || 'you') + '.');
+      await load(); go('today');
+    } catch (e) { toast(e.message, true); }
+  }
+  async function signOut() {
+    try { if (S.sid) await authPost('logout'); } catch (e) { /* ignore */ }
+    try { if (window.google && window.google.accounts && window.google.accounts.id) window.google.accounts.id.disableAutoSelect(); } catch (e) { /* ignore */ }
+    S.sid = ''; S.me = null; store.del('sid'); S.data = null; TM.loaded = false; BK.loaded = false;
+    toast('Signed out.'); load(); go('today');
+  }
+  function signInPanel() {
+    return '<div class="panel section" style="max-width:640px;display:flex;flex-direction:column;gap:10px"><h2 style="margin:0">Sign in</h2>' +
+      '<p class="muted" style="margin:0">Use the Google account Kamakshya added for you. You see only your own contacts, mailboxes and lists.</p>' +
+      '<div id="g-signin" style="min-height:44px"></div></div>';
+  }
+  function whoLine() {
+    if (!S.me) return '';
+    return '<div class="panel section" style="max-width:640px;display:flex;flex-direction:column;gap:8px"><h2 style="margin:0">Signed in</h2>' +
+      '<div><b>' + esc(S.me.name) + '</b> · ' + esc(S.me.email) + ' · <span class="pill">' + esc(ROLE_LABEL[S.me.role] || S.me.role) + '</span></div>' +
+      (S.me.role !== 'owner' ? '<div class="faint">Mailboxes: ' + esc((S.me.mailboxes || []).map(mbLabel).join(', ') || 'none') + '</div>' : '') +
+      '<div class="actions">' + (S.sid ? '<button type="button" class="btn" data-signout>Sign out</button>' : '<span class="faint">Connected with the Owner access key. Sign in with Google below to stop using the key.</span>') + '</div></div>';
+  }
+  const memberName = (id) => { if (!id) return ''; if (S.me && S.me.member_id === id) return 'you'; const all = (TM.members || []).concat(TM.team || []); const m = all.find((x) => x.member_id === id); return m ? m.name : (id === 'owner' ? 'Owner' : id); };
+  async function loadTeamList() {
+    if (TM.team || !can('assign') || S.mode !== 'live') return;
+    try { const j = await authPost('team'); TM.team = j.team || []; if (S.drawer) renderDrawer(); } catch (e) { TM.team = []; }
+  }
+  async function loadTeam(quiet) {
+    if (S.mode !== 'live' || TM.loading) return;
+    TM.loading = true; if (!quiet && S.view === 'team') render();
+    try {
+      const jobs = [can('members') ? authPost('members') : Promise.resolve(null), can('members') ? authPost('audit', { member_id: TM.auditFor }) : Promise.resolve(null),
+        bkPost(BULK_CAMP_API, 'list').catch(() => null), bkPost(BULK_LISTS_API, 'buckets').catch(() => null)];
+      const [m, a, c, b] = await Promise.all(jobs);
+      if (m) { TM.members = m.members || []; TM.roleRights = m.role_rights || {}; }
+      if (a) TM.audit = a.entries || [];
+      if (c) { TM.camps = c.campaigns || []; TM.pend = TM.camps.filter((x) => x.approval_status === 'pending'); }
+      if (b) TM.buckets = b.buckets || [];
+      TM.loaded = true;
+    } catch (e) { toast(e.message, true); } finally { TM.loading = false; if (S.view === 'team') render(); }
+  }
+  function renderTeam() {
+    let h = topbar('Team', 'Who can sign in, what each person can see and do, campaigns waiting for approval, and a log of actions.', can('members') ? '<button class="btn primary" type="button" data-tm="new">Add a person</button>' : '');
+    if (S.mode !== 'live') return h + '<div class="empty">Sign in first.</div>';
+    if (!TM.loaded) return h + '<div class="empty">' + (TM.loading ? 'Loading…' : 'Loading the team…') + '</div>';
+    if (can('approve')) {
+      h += '<section class="section"><div class="section-head"><h2>Waiting for your approval · ' + TM.pend.length + '</h2><span class="hint">Bulk campaigns written by Staff. Approving starts sending at the next 10-minute run inside the sending hours.</span></div>';
+      h += TM.pend.length ? '<div class="panel table-wrap"><table><tbody>' + TM.pend.map((c) => { const b = TM.buckets.find((x) => x.bucket_id === c.bucket_id) || {};
+        return '<tr><td><b>' + esc(c.name) + '</b><div class="faint">by ' + esc(memberName(c.created_by) || 'unknown') + ' · list ' + esc(b.name || c.bucket_id) + ' · ' + esc(c.sendable || 0) + ' ready to send · from ' + esc(String(c.mailboxes || b.mailboxes || '').split(',').filter(Boolean).map(mbLabel).join(', ')) + '</div>' +
+          '<details><summary class="faint" style="cursor:pointer">Read the email</summary><div><b>Subject:</b> ' + esc(c.subject) + '</div><div class="draft">' + esc(c.body) + '</div></details></td>' +
+          '<td><div class="actions" style="justify-content:flex-end"><button class="btn sm primary" type="button" data-tm="approve" data-id="' + esc(c.campaign_id) + '">Approve and start</button><button class="btn sm ghost bad" type="button" data-tm="reject" data-id="' + esc(c.campaign_id) + '">Send back</button></div></td></tr>'; }).join('') + '</tbody></table></div>'
+        : '<div class="empty">Nothing is waiting.</div>';
+      h += '</section>';
+    }
+    if (can('members')) {
+      if (TM.edit) h += memberForm();
+      h += '<section class="section"><div class="section-head"><h2>People · ' + TM.members.length + '</h2><span class="hint">Everyone signs in with their own Google account. Nobody needs the Gmail passwords; mail goes out through the app.</span></div>';
+      h += '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Name</th><th>Role</th><th>Mailboxes</th><th>Lists / campaigns</th><th>Last sign-in</th><th></th></tr></thead><tbody>' + TM.members.map((m) =>
+        '<tr' + (m.active ? '' : ' style="opacity:.55"') + '><td><b>' + esc(m.name) + '</b><div class="faint mono">' + esc(m.email) + '</div>' + (m.active ? '' : '<span class="pill">Switched off</span>') + '</td><td>' + esc(ROLE_LABEL[m.role] || m.role) + '</td>' +
+        '<td class="faint">' + (m.role === 'owner' ? 'all' : esc((m.mailboxes || []).map(mbLabel).join(', ') || 'none')) + '</td>' +
+        '<td class="faint">' + (m.role === 'owner' ? 'all' : esc((m.buckets === 'all' ? 'all lists' : ((m.buckets || []).length + ' lists')) + ' · ' + (m.campaign_codes === 'all' ? 'all campaigns' : ((m.campaign_codes || []).length + ' campaigns')))) + '</td>' +
+        '<td class="faint">' + esc(m.last_login ? fmtDate(String(m.last_login).slice(0, 10)) : 'never') + '</td>' +
+        '<td><div class="actions" style="justify-content:flex-end">' + (m.role === 'owner' ? '' : '<button class="btn sm" type="button" data-tm="edit" data-id="' + esc(m.member_id) + '">Edit</button>') + '<button class="btn sm ghost" type="button" data-tm="log" data-id="' + esc(m.member_id) + '">Activity</button></div></td></tr>').join('') + '</tbody></table></div></section>';
+      const fm = TM.members.find((m) => m.member_id === TM.auditFor);
+      h += '<section class="section"><div class="section-head"><h2>Activity' + (fm ? ' · ' + esc(fm.name) : '') + '</h2><span class="hint">Every change, send and refusal, newest first (last 300).' + (fm ? ' <a href="#" data-tm="logall">Show everyone</a>' : '') + '</span></div>';
+      h += TM.audit.length ? '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>On</th><th>Result</th></tr></thead><tbody>' + TM.audit.map((e) =>
+        '<tr><td class="faint num" style="white-space:nowrap">' + esc(e.at ? new Date(e.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '') + '</td><td>' + esc(memberName(e.member_id) || e.email || 'not signed in') + '</td><td>' + esc(String(e.action || '').replace(/[_:]/g, ' ')) + (e.detail && e.detail !== '{}' ? '<div class="faint" style="font-size:12px">' + esc(String(e.detail).replace(/[{}"]/g, '').replace(/,/g, ', ').slice(0, 160)) + '</div>' : '') + '</td><td class="faint mono" style="font-size:12px">' + esc(String(e.object || '').slice(0, 60)) + '</td>' +
+        '<td>' + (/refused/.test(e.result || '') ? '<span class="pill" style="border-color:#cf222e;color:#cf222e">' + esc(e.result) + '</span>' : '<span class="faint">' + esc(e.result || '') + '</span>') + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">No activity yet.</div>';
+      h += '</section>';
+    }
+    return h;
+  }
+  function memberForm() {
+    const m = TM.edit; const role = m.role || 'staff';
+    const def = new Set(TM.roleRights[role] || []);
+    const eff = new Set(m._rights || Array.from(def));
+    const box = (name, val, on, label) => '<label class="chip" style="gap:6px;white-space:nowrap"><input type="checkbox" style="width:auto;min-width:0;flex:none;margin:0" name="' + name + '" value="' + esc(val) + '"' + (on ? ' checked' : '') + '>' + esc(label) + '</label>';
+    const inList = (arr, v) => arr === 'all' || (Array.isArray(arr) && arr.includes(v));
+    const camps = campaigns().slice().sort((a, b) => String(a.campaign_name).localeCompare(String(b.campaign_name)));
+    return '<form class="panel section" id="tm-form" style="display:flex;flex-direction:column;gap:12px"><div class="panel-head" style="margin:0"><h2>' + (m.member_id ? 'Edit ' + esc(m.name) : 'Add a person') + '</h2><button type="button" class="btn ghost" data-tm="close">Close</button></div>' +
+      '<div class="form-grid"><label class="field" for="tm-name">Name<input id="tm-name" required value="' + esc(m.name || '') + '"></label>' +
+      '<label class="field" for="tm-email">Google sign-in address<input id="tm-email" type="email" required value="' + esc(m.email || '') + '" placeholder="name@gmail.com"></label>' +
+      '<label class="field" for="tm-role">Role<select id="tm-role">' + ['manager', 'staff', 'viewer'].map((r) => '<option value="' + r + '"' + (r === role ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') + '</select></label>' +
+      '<label class="field" for="tm-active">Access<select id="tm-active"><option value="1"' + (m.active !== false ? ' selected' : '') + '>On</option><option value="0"' + (m.active === false ? ' selected' : '') + '>Switched off (signs them out)</option></select></label></div>' +
+      '<div><b>Mailboxes they work from</b><p class="hint-line">They see replies to these addresses and send only from them. Two people can share a mailbox and see each other\'s replies.</p><div class="chips">' + MAILBOXES.map((x) => box('tm-mb', x[0], inList(m.mailboxes || [], x[0]), x[1])).join('') + '</div></div>' +
+      '<div><b>Bulk lists</b><div class="chips">' + (TM.buckets.length ? TM.buckets.map((b) => box('tm-bk', b.bucket_id, inList(m.buckets || [], b.bucket_id), b.name)).join('') : '<span class="faint">No lists yet.</span>') + '</div></div>' +
+      '<div><b>Relationship campaigns</b><p class="hint-line">They see contacts in these campaigns, plus contacts assigned to them and contacts whose home mailbox is theirs.</p><div class="chips">' + camps.map((c) => box('tm-cp', c.campaign_code, inList(m.campaign_codes || [], c.campaign_code), c.campaign_name)).join('') + '</div></div>' +
+      '<div><b>What they can do</b><p class="hint-line">Ticked boxes follow the role; change them to give or take away a single right. Team and Export stay with the Owner.</p><div class="chips" id="tm-rights">' + Object.keys(RIGHT_LABEL).filter((r) => !['members', 'export'].includes(r)).map((r) => box('tm-rt', r, eff.has(r), RIGHT_LABEL[r] + (def.has(r) ? '' : ' (extra)'))).join('') + '</div></div>' +
+      '<label class="field" for="tm-notes">Notes<input id="tm-notes" value="' + esc(m.notes || '') + '"></label>' +
+      '<div class="actions"><button class="btn primary" type="submit">' + (m.member_id ? 'Save changes' : 'Add') + '</button></div></form>';
+  }
+  function bindTeam() {
+    const f = $('#tm-form'); if (!f) return;
+    $('#tm-role').addEventListener('change', (e) => { collectMember(); TM.edit.role = e.target.value; TM.edit._rights = null; render(); });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); const m = collectMember();
+      const def = new Set(TM.roleRights[m.role] || []); const eff = new Set(m._rights || []);
+      const rights = []; Object.keys(RIGHT_LABEL).filter((r) => !['members', 'export'].includes(r)).forEach((r) => { if (eff.has(r) && !def.has(r)) rights.push(r); if (!eff.has(r) && def.has(r)) rights.push('-' + r); });
+      const b = f.querySelector('button[type=submit]'); b.disabled = true;
+      try { const j = await authPost('member_save', { member_id: m.member_id || '', name: m.name, email: m.email, role: m.role, mailboxes: m.mailboxes, buckets: m.buckets, campaign_codes: m.campaign_codes, rights: rights, active: m.active !== false, notes: m.notes }); toast(j.message || 'Saved.'); TM.edit = null; await loadTeam(true); }
+      catch (er) { toast(er.message, true); b.disabled = false; }
+    });
+  }
+  function collectMember() {
+    const m = TM.edit; if (!m || !$('#tm-form')) return m;
+    const vals = (n) => Array.from(document.querySelectorAll('input[name="' + n + '"]:checked')).map((x) => x.value);
+    m.name = $('#tm-name').value.trim(); m.email = $('#tm-email').value.trim().toLowerCase(); m.role = $('#tm-role').value; m.active = $('#tm-active').value === '1'; m.notes = $('#tm-notes').value.trim();
+    m.mailboxes = vals('tm-mb'); m.buckets = vals('tm-bk'); m.campaign_codes = vals('tm-cp'); m._rights = vals('tm-rt');
+    return m;
+  }
+  async function onTeamClick(t) {
+    const a = t.getAttribute('data-tm'); const id = t.getAttribute('data-id') || '';
+    if (a === 'new') { TM.edit = { role: 'staff', mailboxes: [], buckets: [], campaign_codes: [], active: true }; render(); window.scrollTo(0, 0); return; }
+    if (a === 'close') { TM.edit = null; render(); return; }
+    if (a === 'edit') { const m = TM.members.find((x) => x.member_id === id); if (!m) return; TM.edit = Object.assign({}, m, { _rights: (m.rights || []).slice() }); render(); window.scrollTo(0, 0); return; }
+    if (a === 'log' || a === 'logall') { TM.auditFor = a === 'log' ? id : ''; try { const j = await authPost('audit', { member_id: TM.auditFor }); TM.audit = j.entries || []; } catch (e) { toast(e.message, true); } render(); return; }
+    if (a === 'approve' || a === 'reject') {
+      const c = TM.pend.find((x) => x.campaign_id === id); if (!c) return;
+      let note = '';
+      if (a === 'approve' && !confirm('Approve "' + c.name + '" and start sending to ' + (c.sendable || 0) + ' people?')) return;
+      if (a === 'reject') { const n = prompt('What should they change? (they see this note)', ''); if (n === null) return; note = n; }
+      t.disabled = true;
+      try { const j = await bkPost(BULK_CAMP_API, 'approve', { campaign_id: id, decision: a === 'approve' ? 'approve' : 'reject', note: note }); toast(j.message || 'Done.'); BK.loaded = false; await loadTeam(true); }
+      catch (e) { toast(e.message, true); t.disabled = false; }
+    }
+  }
+  function assignPanel(c) {
+    const who = c.assigned_to ? memberName(c.assigned_to) : '';
+    const info = '<div class="faint">' + (who ? 'Assigned to <b>' + esc(who) + '</b>' : 'Not assigned to anyone') + (c.send_mailbox ? ' · home mailbox ' + esc(mbAddr(c.send_mailbox) || c.send_mailbox) : '') + '</div>';
+    if (!S.me || !can('assign') || S.mode !== 'live') return S.me && S.me.role !== 'owner' ? '<div class="panel section">' + info + '</div>' : '';
+    if (!TM.team) { loadTeamList(); return '<div class="panel section"><h3>Assign</h3>' + info + '<div class="faint">Loading the team…</div></div>'; }
+    const myBoxes = S.me.role === 'owner' ? MAILBOXES.map((m) => m[0]) : (S.me.mailboxes || []);
+    return '<form class="panel section" id="assign-form"><h3>Assign</h3>' + info + '<div class="form-grid">' +
+      '<label class="field" for="as-who">Person responsible<select id="as-who"><option value="">Nobody</option>' + TM.team.map((m) => '<option value="' + esc(m.member_id) + '"' + (m.member_id === c.assigned_to ? ' selected' : '') + '>' + esc(m.name) + ' (' + esc(ROLE_LABEL[m.role] || m.role) + ')</option>').join('') + '</select></label>' +
+      '<label class="field" for="as-mb">Home mailbox<select id="as-mb"><option value="">Automatic</option>' + myBoxes.map((k) => '<option value="' + esc(k) + '"' + (k === c.send_mailbox ? ' selected' : '') + '>' + esc(mbLabel(k)) + '</option>').join('') + '</select></label></div>' +
+      '<div class="actions"><button class="btn" type="submit">Save assignment</button></div></form>';
+  }
+
   // ---------- render & events ----------
   function render() {
     renderChrome();
     const v = $('#view');
     if (!S.data) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
-    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, bulk: renderBulk, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings };
+    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, bulk: renderBulk, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings, team: renderTeam };
+    if (!viewAllowed(S.view)) S.view = 'today';
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
     bindViewInputs();
     if (S.view === 'bulk') { bindBulk(); if (S.mode === 'live' && !BK.loaded && !BK.loading) loadBulk(); }
+    if (S.view === 'team') { bindTeam(); if (S.mode === 'live' && !TM.loaded && !TM.loading) loadTeam(); }
+    if (S.view === 'settings' && !S.sid) mountGoogleButton();
   }
 
   function bindViewInputs() {
@@ -1600,7 +1810,7 @@
         st.textContent = 'Reading photo ' + (i + 1) + ' of ' + files.length + '…';
         try {
           const image = await shrink(files[i]);
-          const r = await fetch(CARD_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'card', payload: { image: image, mime: 'image/jpeg', campaign_code: camp, note: note } })) });
+          const r = await fetch(CARD_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: 'card', payload: { image: image, mime: 'image/jpeg', campaign_code: camp, note: note } })) });
           let j = null; try { j = await r.json(); } catch (er) { j = null; }
           if (!r.ok || !j) throw new Error((j && j.message) || 'The scanner answered with status ' + r.status);
           done.push(j.message); toast(j.message, j.ok === false);
@@ -1656,6 +1866,8 @@
   }
 
   document.addEventListener('click', (e) => {
+    const tm = e.target.closest('[data-tm],[data-signout]');
+    if (tm) { e.preventDefault(); if (tm.hasAttribute('data-signout')) signOut(); else onTeamClick(tm); return; }
     const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete],[data-inboxreply],[data-inboxdone],[data-signew],[data-sigedit],[data-sigdel],[data-sigcancel],[data-rcdraft],[data-rcadd],[data-rcsnooze],[data-rcnever],[data-rcmore]');
     if (!t) return;
     if (t.hasAttribute('data-run')) { runJob(t.getAttribute('data-run'), t.getAttribute('data-camp') ? { campaign_code: t.getAttribute('data-camp'), limit: 12 } : {}, t); return; }
@@ -1757,5 +1969,5 @@
   const initial = (location.hash || '').replace('#', '');
   if (VIEWS.some((v) => v.id === initial)) S.view = initial;
   load();
-  setInterval(() => { if (S.mode === 'live' && document.visibilityState === 'visible' && !S.drawer && !(S.view === 'bulk' && (BK.edit || BK.imp || BK.bucketEdit))) { load(true); if (S.view === 'bulk') loadBulk(true); } }, 5 * 60 * 1000);
+  setInterval(() => { if (S.mode === 'live' && document.visibilityState === 'visible' && !S.drawer && !(S.view === 'bulk' && (BK.edit || BK.imp || BK.bucketEdit))) { load(true); if (S.view === 'bulk') loadBulk(true); if (S.view === 'team') loadTeam(true); } }, 5 * 60 * 1000);
 })();
