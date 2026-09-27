@@ -16,6 +16,10 @@
     data: null,
     inbox: [],
     threads: {},
+    sigs: [],
+    reconnect: { list: [], total: 0, scan: [], loaded: false },
+    rcAll: false,
+    sigEdit: null,
     mode: 'demo',
     loading: false,
     lastSync: null,
@@ -96,19 +100,44 @@
   const campaigns = () => (S.data ? S.data.campaigns : []);
   const campaignName = (code) => { const c = campaigns().find((x) => x.campaign_code === code); return c ? c.campaign_name : (code || '—'); };
   const cleanPhone = (v) => String(v || '').replace(/[^\d+]/g, '').slice(0, 20);
+  // phone status from the daily phone check (PRE-20): WhatsApp only for numbers that can be mobiles
+  const waOk = (c) => !!(c && c.phone) && !['landline', 'invalid'].includes(String(c.phone_status || ''));
+  const PHONE_BADGE = { mobile_verified: ['Mobile, confirmed', '#1a7f37'], mobile_likely: ['Mobile, likely', '#2f81f7'], landline: ['Landline / office', '#9a6700'], invalid: ['Invalid number', '#cf222e'], unchecked: ['Not checked yet', '#6e7781'] };
+  const phoneBadge = (c) => { const b = PHONE_BADGE[c.phone_status || 'unchecked'] || PHONE_BADGE.unchecked; return '<span class="pill" style="border-color:' + b[1] + ';color:' + b[1] + '" title="' + esc(c.phone_sources || '') + '">' + b[0] + '</span>'; };
+  const waBtn = (c, text) => waOk(c) ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, text)) + '">Send on WhatsApp' + (c.phone_status && c.phone_status !== 'unchecked' ? '' : ' (number not checked)') + '</a>' : (c && c.phone && c.phone_status === 'landline' ? '<a class="btn sm" href="tel:' + esc(c.phone) + '">Call ' + esc(c.phone) + '</a>' : '');
+  const PHONE_API = 'https://n8n.assignover.in/webhook/pre-phone-check';
   const waLink = (ph, text) => { let d = String(ph || '').replace(/\D/g, ''); if (d.length === 10) d = '91' + d; return 'https://wa.me/' + d + (text ? '?text=' + encodeURIComponent(text) : ''); };
   const hasPlaceholder = (t) => /\[[^\]]{2,80}\]/.test(t || '');
   const calLink = (c) => { const t = new Date(); t.setDate(t.getDate() + 3); t.setHours(11, 0, 0, 0); const e = new Date(t.getTime() + 30 * 60000); const f = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
     return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent('Call: ' + (c.full_name || '') + (c.organization ? ' (' + c.organization + ')' : '')) + '&dates=' + f(t) + '/' + f(e) + '&details=' + encodeURIComponent((c.recommended_action || '') + '\n' + (c.linkedin_url || '')) + (c.email ? '&add=' + encodeURIComponent(c.email) : ''); };
   const CARD_API = 'https://n8n.assignover.in/webhook/pre-card';
   const INBOX_API = 'https://n8n.assignover.in/webhook/pre-inbox-api';
+  const RECONNECT_API = 'https://n8n.assignover.in/webhook/pre-reconnect-api';
   const MAILBOXES = [['b2b0', 'info@b2btourdeals.com', 'B2B'], ['b2b1', 'ops1@b2btourdeals.com', 'B2B'], ['b2b2', 'ops2@b2btourdeals.com', 'B2B'], ['b2b3', 'ops3@b2btourdeals.com', 'B2B'], ['b2b4', 'ops4@b2btourdeals.com', 'B2B'], ['b2b5', 'ops5@b2btourdeals.com', 'B2B'], ['b2b6', 'ops6@b2btourdeals.com', 'B2B'], ['b2b7', 'ops7@b2btourdeals.com', 'B2B'],
     ['info', 'info@negotrip.com', 'B2C'], ['kn', 'kn0733@gmail.com', 'Individual / Research'], ['icssr', 'icssrmedicaltourism@gmail.com', 'Research'], ['assign', 'assignover@gmail.com', 'Research'], ['hpcu', 'ra1.tourism@hpcu.ac.in', 'Research']];
-  const mbAddr = (k) => { const m = MAILBOXES.find((x) => x[0] === k); return m ? m[1] : ''; };
+  // other addresses that live in the same Gmail account (a reply can go from either)
+  const MB_ALT = { b2b0: ['b2btourdeals@gmail.com'], b2b1: ['ops1b2btourdeals@gmail.com'], b2b2: ['ops2b2btourdeals@gmail.com'], b2b3: ['ops3b2btourdeals@gmail.com'], b2b4: ['ops4b2btourdeals@gmail.com'], b2b5: ['ops5b2btourdeals@gmail.com'], b2b6: ['ops6b2btourdeals@gmail.com'], b2b7: ['ops7b2btourdeals@gmail.com'], info: ['sales@negotrip.in'] };
+  const ALL_ADDR = [];
+  MAILBOXES.forEach((m) => { ALL_ADDR.push(m[1]); (MB_ALT[m[0]] || []).forEach((a) => ALL_ADDR.push(a)); });
+  const mbAddr = (k) => { if (String(k || '').includes('@')) return k; const m = MAILBOXES.find((x) => x[0] === k); return m ? m[1] : ''; };
   function fromOptionsHtml(selected, autoLabel) {
     const groups = {}; MAILBOXES.forEach((m) => { (groups[m[2]] = groups[m[2]] || []).push(m); });
-    return '<option value="">' + esc(autoLabel || 'Automatic (best address)') + '</option>' + Object.keys(groups).map((g) => '<optgroup label="' + esc(g) + '">' + groups[g].map((m) => '<option value="' + m[0] + '"' + (m[0] === selected ? ' selected' : '') + '>' + esc(m[1]) + '</option>').join('') + '</optgroup>').join('');
+    return '<option value="">' + esc(autoLabel || 'Automatic (best address)') + '</option>' + Object.keys(groups).map((g) => '<optgroup label="' + esc(g) + '">' + groups[g].map((m) => [m[1]].concat(MB_ALT[m[0]] || []).map((a) => '<option value="' + esc(a) + '"' + (a === selected ? ' selected' : '') + '>' + esc(a) + '</option>').join('')).join('') + '</optgroup>').join('');
   }
+  const sigCovers = (g, addr) => { const a = String(g.addresses || '').toLowerCase(); return !a || a === 'all' || !addr || a.split(',').includes(String(addr).toLowerCase()); };
+  function sigOptionsHtml(addr, selected) {
+    const list = (S.sigs || []).filter((g) => g.active !== false && sigCovers(g, addr));
+    const def = addr ? list.filter((g) => g.is_default).sort((a, b) => String(b.updated).localeCompare(String(a.updated)))[0] : null;
+    const o = (v, l) => '<option value="' + esc(v) + '"' + (v === (selected || '') ? ' selected' : '') + '>' + esc(l) + '</option>';
+    return o('', addr ? ('Default for this address: ' + (def ? def.label : 'Gmail signature')) : 'Default signature of the sending address') +
+      list.map((g) => o(g.sig_id, g.label + (g.sender_name ? ' (as ' + g.sender_name + ')' : ''))).join('') +
+      o('gmail', 'Gmail signature of this address') + o('none', 'No signature');
+  }
+  async function loadSigs() {
+    if (S.mode !== 'live') return;
+    try { const j = await inboxApi('sig_list'); S.sigs = j.signatures || []; if (S.view === 'settings' || S.view === 'today') render(); if (S.drawer) renderDrawer(); } catch (e) { S.sigs = S.sigs || []; }
+  }
+  const cleanSigHtml = (h) => String(h || '').replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<(meta|link|script|style)[^>]*>/gi, '').replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/javascript:/gi, '').trim();
   const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
   function campOptionsHtml(selected, allLabel) {
     const groups = {};
@@ -125,11 +154,30 @@
     ['email', 'Find email addresses', 'Checks official websites, contact pages and public sources for missing emails. Also runs daily 7:15.'],
     ['monitor', 'Monitor & spot opportunities', 'Looks for new publications and good timing, flags research, B2B, referral and network opportunities. Also runs Wed and Sat 7:10.'],
     ['report', 'Email me the weekly report', 'Funnel, campaign targets, opportunities and relationships going cold. Also every Monday 8:25.'],
+    ['social', 'Find social pages', 'Reads each organisation website (and Google, when needed) for Facebook, Instagram, WhatsApp and a general company email such as info@. Also runs daily 8:00.'],
+    ['phones', 'Check phone numbers', 'Cleans every number to +91 format and marks it mobile, landline or invalid. WhatsApp buttons hide for landlines. Also runs daily 7:30.'],
     ['sheet', 'Sync Google Sheet', 'Refreshes the mirror sheet and imports rows from its Import tab. Also every 6 hours.']
   ];
   const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1-y4kiIRBqUSsJHf04w52wttwXHATYGRbJZ7mJ6SoDjI/edit';
   async function runJob(job, extra, btn) {
     if (S.mode === 'demo') { toast('Demo mode: connect your key to run jobs.'); return; }
+    if (job === 'social') {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch('https://n8n.assignover.in/webhook/pre-social', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { limit: 30 } })) });
+        const j = await r.json(); toast((j && j.message) || 'Started.'); setTimeout(() => load(true), 240000);
+      } catch (e) { toast('Could not start the social check.', true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
+      return;
+    }
+    if (job === 'phones') {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(PHONE_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: 'run', payload: { all: true } })) });
+        const j = await r.json(); if (!j || j.ok === false) throw new Error((j && j.message) || 'The phone check did not answer.');
+        toast(j.message || 'Phones checked.'); load(true);
+      } catch (e) { toast(e.message, true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 3000); }
+      return;
+    }
     if (btn) btn.disabled = true;
     try { const j = await api('run', Object.assign({ job: job }, extra || {})); toast(job === 'discover' ? 'Searching now. New people appear on Today under "Just discovered" in 2 to 5 minutes, then get researched and scored.' : (j.message || 'Started.')); if (job === 'discover') { setTimeout(() => load(true), 180000); setTimeout(() => load(true), 480000); } }
     catch (e) { toast(e.message, true); } finally { if (btn) setTimeout(() => { btn.disabled = false; }, 4000); }
@@ -159,6 +207,17 @@
     if (j.ok === false) throw new Error(j.message || 'The inbox request did not go through.');
     return j;
   }
+  async function rcApi(op, payload) {
+    const r = await fetch(RECONNECT_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (!r.ok || !j) throw new Error((j && j.message) || 'The reconnect service answered with status ' + r.status + '.');
+    if (j.ok === false) throw new Error(j.message || 'The request did not go through.');
+    return j;
+  }
+  async function loadReconnect() {
+    if (S.mode !== 'live') return;
+    try { const j = await rcApi('list'); S.reconnect = { list: j.list || [], total: j.total || 0, scan: j.scan || [], loaded: true }; if (S.view === 'today' || S.view === 'settings') render(); } catch (e) { /* keep the old list */ }
+  }
   async function loadInbox() {
     if (S.mode !== 'live') return;
     try { const j = await inboxApi('list'); S.inbox = j.inbox || []; if (S.view === 'today') render(); } catch (e) { S.inbox = S.inbox || []; }
@@ -182,7 +241,7 @@
       const j = await api('bootstrap');
       S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [], content: j.content || [], suppressed: j.suppressed || 0 };
       S.mode = 'live'; S.error = ''; S.lastSync = new Date(); S.threads = {};
-      setTimeout(loadInbox, 50);
+      setTimeout(loadInbox, 50); setTimeout(loadSigs, 400); setTimeout(loadReconnect, 700);
     } catch (e) {
       S.error = e.message;
       if (!S.data) { S.data = JSON.parse(JSON.stringify(window.DEMO_DATA)); S.data.content = S.data.content || []; S.mode = 'demo'; }
@@ -383,7 +442,37 @@
     h += '<section class="section"><div class="section-head"><h2>Follow-ups ready</h2><span class="hint">Drafted each morning at 9:00. Edit before sending; nothing goes out automatically.</span></div>';
     h += drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>';
     h += '</section>';
+    h += reconnectSection();
     return h;
+  }
+
+  const MB_NAME = { b2b0: 'info@b2btourdeals.com', b2b1: 'ops1', b2b2: 'ops2', b2b3: 'ops3', b2b4: 'ops4', b2b5: 'ops5', b2b6: 'ops6', b2b7: 'ops7', kn: 'kn0733', info: 'info@negotrip.com', icssr: 'icssrmedicaltourism', assign: 'assignover', hpcu: 'ra1.tourism@hpcu' };
+  function scanLine() {
+    const sc = (S.reconnect.scan || []).filter((x) => x.back_to);
+    if (!sc.length) return '';
+    const oldest = sc.map((x) => x.back_to).sort()[0]; const newest = sc.map((x) => x.back_to).sort().pop();
+    const done = sc.filter((x) => x.done).length;
+    return done === sc.length ? 'All ' + sc.length + ' mailboxes are read back two years.' : 'So far the mailboxes are read back to dates between ' + fmtDate(oldest) + ' and ' + fmtDate(newest) + ' (' + done + ' of ' + sc.length + ' finished). Older contacts appear here as the scan goes further back.';
+  }
+  function reconnectSection() {
+    const R = S.reconnect; if (S.mode !== 'live' || !R.loaded) return '';
+    let h = '<section class="section"><div class="section-head"><h2>Reconnect' + (R.total ? ' · ' + R.total : '') + '</h2><span class="hint">People you exchanged email with both ways who have been quiet for 6 months or more, strongest first. Draft a note, review it, then send it from their details.</span></div>';
+    if (!R.list.length) return h + '<div class="empty">Nobody to reconnect with yet. ' + esc(scanLine()) + '</div></section>';
+    const list = S.rcAll ? R.list : R.list.slice(0, 6);
+    h += '<div class="cards">' + list.map(reconnectCard).join('') + '</div>';
+    if (R.list.length > 6) h += '<div class="actions" style="margin-top:8px"><button type="button" class="btn sm ghost" data-rcmore="1">' + (S.rcAll ? 'Show fewer' : 'Show all ' + R.list.length) + '</button></div>';
+    return h + '<p class="hint-line">' + esc(scanLine()) + '</p></section>';
+  }
+  function reconnectCard(r) {
+    const e = esc(r.email);
+    const who = '<span class="name"' + (r.in_contacts ? ' role="button" tabindex="0" data-open="' + esc(r.person_key) + '"' : '') + '>' + esc(r.name) + '</span><span class="role">' + esc([r.job_title, r.organization].filter(Boolean).join(', ')) + '</span>';
+    let btns = '';
+    if (r.in_contacts) btns += r.has_draft ? '<button type="button" class="btn sm primary" data-open="' + esc(r.person_key) + '">Open draft</button>' : '<button type="button" class="btn sm primary" data-rcdraft="' + e + '">Draft a note</button>';
+    else btns += '<button type="button" class="btn sm primary" data-rcadd="' + e + '">Add to contacts</button>';
+    btns += '<button type="button" class="btn sm" data-rcsnooze="' + e + '">Snooze 3 months</button><button type="button" class="btn sm ghost" data-rcnever="' + e + '">Not a work contact</button>';
+    return '<article class="card"><div class="card-head"><div class="who">' + who + '</div><div class="actions"><span class="pill">' + esc(r.months_quiet) + ' months quiet</span></div></div>' +
+      '<div class="faint" style="font-size:12.5px">' + e + (r.in_contacts ? ' · ' + esc(String(r.status || '').replace(/_/g, ' ').toLowerCase()) : ' · not in contacts yet') + '</div>' +
+      '<div style="margin:6px 0">' + esc(r.reason) + '</div><div class="actions">' + btns + '</div></article>';
   }
 
   function inboxCard(m) {
@@ -392,6 +481,7 @@
       '<div class="actions"><span class="pill">' + fmtDate(String(m.received_at || '').slice(0, 10)) + '</span></div></div>' +
       '<div><b>' + esc(m.subject || '(no subject)') + '</b></div><div class="draft" style="max-height:220px;overflow:auto">' + esc(m.body) + '</div>' +
       '<label class="field" for="ib-' + id + '">Your reply<textarea id="ib-' + id + '" placeholder="Write your answer. It goes from ' + esc(to) + ' in the same thread."></textarea></label>' +
+      '<label class="field" for="ibs-' + id + '" style="max-width:420px">Signature<select id="ibs-' + id + '">' + sigOptionsHtml(to, '') + '</select></label>' +
       '<div class="actions"><button type="button" class="btn sm primary" data-inboxreply="' + id + '">Send reply</button><button type="button" class="btn sm" data-open="' + esc(m.person_key) + '">Details</button><button type="button" class="btn sm ghost" data-inboxdone="' + id + '">Mark handled</button></div></article>';
   }
 
@@ -439,7 +529,7 @@
       act(c, isReply ? 'replied' : 'fu_linkedin', isReply ? 'I sent this reply' : 'Sent on LinkedIn', 'good') +
       (hasEmail && !isReply ? act(c, 'fu_email', 'Create Gmail draft') : '') +
       (canEmail(c) && !hasPlaceholder(c.pending_message) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send email now</button>' : '') +
-      (c.phone ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, c.pending_message)) + '">Send on WhatsApp</a>' : '') +
+      waBtn(c, c.pending_message) +
       '<button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">They replied</button>' + act(c, 'snooze', 'Snooze 7 days', 'ghost') + act(c, 'dnc', 'Do not contact', 'ghost bad') + '</div></article>';
   }
 
@@ -601,15 +691,21 @@
       '<dt>Follow-ups sent</dt><dd class="num">' + num(c.followup_count) + (c.nurture_stage && c.nurture_stage !== 'none' ? ' · stage ' + esc(c.nurture_stage) : '') + '</dd>' +
       '<dt>Last intent</dt><dd>' + esc((c.last_intent || '—').replace(/_/g, ' ').toLowerCase()) + '</dd>' +
       '<dt>Email</dt><dd>' + (c.email ? '<a class="mono" href="mailto:' + esc(c.email) + '">' + esc(c.email) + '</a> <span class="faint">(' + esc(String(c.email_status || '').replace(/_/g, ' ')) + (c.email_source ? ', ' + esc(c.email_source) : '') + ')</span>' : '<span class="faint">Not added yet. LinkedIn shows email only under Contact info, usually after you connect.</span> <a href="#" onclick="var e=document.getElementById(\'e-email\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add email</a>') + '</dd>' +
-      '<dt>Mobile</dt><dd>' + (c.phone ? '<a class="mono" href="tel:' + esc(c.phone) + '">' + esc(c.phone) + '</a> · <a href="' + esc(waLink(c.phone)) + '" target="_blank" rel="noopener">WhatsApp</a>' : '<span class="faint">Not added yet.</span> <a href="#" onclick="var e=document.getElementById(\'e-phone\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add mobile</a>') + '</dd>' +
+      '<dt>Phone</dt><dd>' + (c.phone ? '<a class="mono" href="tel:' + esc(c.phone) + '">' + esc(c.phone) + '</a> ' + phoneBadge(c) + (waOk(c) ? ' · <a href="' + esc(waLink(c.phone)) + '" target="_blank" rel="noopener">WhatsApp</a>' : '') + (c.phone_sources ? '<div class="faint" style="font-size:12px">Seen on: ' + esc(c.phone_sources) + '</div>' : '') : '<span class="faint">Not added yet.</span> <a href="#" onclick="var e=document.getElementById(\'e-phone\');e.scrollIntoView({block:\'center\'});e.focus();return false">Add mobile</a>') + '</dd>' +
       '<dt>Location</dt><dd>' + esc([c.city, c.country].filter(Boolean).join(', ') || '—') + '</dd>' +
+      (c.facebook_url || c.instagram_handle || c.org_whatsapp || c.org_email ? '<dt>Organisation</dt><dd>' + [
+        c.facebook_url ? '<a href="' + esc(c.facebook_url) + '" target="_blank" rel="noopener">Facebook</a>' : '',
+        c.instagram_handle ? '<a href="https://www.instagram.com/' + esc(encodeURIComponent(c.instagram_handle)) + '/" target="_blank" rel="noopener">Instagram @' + esc(c.instagram_handle) + '</a>' : '',
+        c.org_whatsapp ? '<a href="' + esc(waLink(c.org_whatsapp)) + '" target="_blank" rel="noopener">Company WhatsApp</a>' : '',
+        c.org_email ? '<a class="mono" href="mailto:' + esc(c.org_email) + '">' + esc(c.org_email) + '</a> <span class="faint">(company)</span>' : ''].filter(Boolean).join(' · ') + (c.social_source ? '<div class="faint" style="font-size:12px">Found via ' + esc(c.social_source) + '. Open and message from your own accounts.</div>' : '') + '</dd>' : '') +
+      (c.maps_url || c.rating ? '<dt>Google Maps</dt><dd>' + (c.rating ? '<b>' + esc(Number(c.rating).toFixed(1)) + '★</b> <span class="faint">(' + esc(num(c.review_count || 0)) + ' reviews)</span> ' : '') + (c.maps_url ? '<a href="' + esc(c.maps_url) + '" target="_blank" rel="noopener">Open in Maps</a>' : '') + '</dd>' : '') +
       '<dt>Interests</dt><dd>' + esc(c.interests || '—') + '</dd>' +
       '<dt>Scores</dt><dd>' + scoreLine(c) + '</dd>' +
       '<dt>Added</dt><dd>' + fmtDate(c.added_on) + ' · ' + esc(c.source || '') + '</dd></dl></div>' +
       (c.pending_message ? '<div class="section"><h3>Draft waiting</h3>' + (c.pending_subject ? '<div><b>Subject:</b> ' + esc(c.pending_subject) + '</div>' : '') + '<div class="draft">' + esc(c.pending_message) + '</div><div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' +
         act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') +
-        (canEmail(c) ? '<label class="field" for="d-from" style="min-width:220px">Send from<select id="d-from">' + fromOptionsHtml(c.send_mailbox || '', c.send_mailbox ? 'Home address: ' + mbAddr(c.send_mailbox) : 'Automatic (campaign address)') + '</select></label><button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
-        (c.phone ? '<a class="btn sm" style="background:#128c7e;color:#fff;border-color:#128c7e" target="_blank" rel="noopener" href="' + esc(waLink(c.phone, c.pending_message)) + '">Send on WhatsApp</a>' : '') + '</div></div>' : '') +
+        (canEmail(c) ? '<label class="field" for="d-from" style="min-width:220px">Send from<select id="d-from">' + fromOptionsHtml('', c.send_mailbox ? 'Home address: ' + mbAddr(c.send_mailbox) : 'Automatic (campaign address)') + '</select></label><label class="field" for="d-sig" style="min-width:220px">Signature<select id="d-sig">' + sigOptionsHtml(c.send_mailbox ? mbAddr(c.send_mailbox) : '', '') + '</select></label><button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
+        waBtn(c, c.pending_message) + '</div></div>' : '') +
       '<div class="section"><h3>Email conversation</h3>' + threadHtml(c) + '</div>' +
       (notes && c.status === 'READY_FOR_CONNECTION' ? '<div class="section"><h3>Connection notes</h3><div class="notes">' + notes + '</div></div>' : '') +
       '<div class="section"><h3>History</h3>' + (hist.length ? '<div class="timeline">' + hist.map((i) => '<div class="tl ' + (i.direction === 'inbound' ? 'in' : (i.direction === 'outbound' ? 'out' : '')) + '"><div class="meta">' + fmtDate(i.interaction_date) + ' · ' + esc(i.channel) + ' · ' + esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' · ' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) : '') + '</div>' + (i.message ? '<div class="msg">' + esc(i.message) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="faint">Nothing logged yet.</div>') + '</div>' +
@@ -918,6 +1014,55 @@
   }
 
   // ---------- SETTINGS ----------
+  function sigPanelHtml() {
+    const e = S.sigEdit;
+    let h = '<div class="panel section" style="max-width:760px" id="sig-panel"><h2>Email signatures</h2>' +
+      '<p class="faint" style="margin:0 0 8px">Gmail keeps several named signatures in its own screen but only lets other apps read one per address, so save the ones you use here (for example Kamakshya and Manish). You pick one each time you send or reply. "Default" is used when you do not pick.</p>';
+    if (S.mode !== 'live') return h + '<div class="empty">Connect your key to manage signatures.</div></div>';
+    const list = S.sigs || [];
+    h += list.length ? '<div class="table-wrap"><table><thead><tr><th>Name</th><th>Used for</th><th>Shown as</th><th></th></tr></thead><tbody>' + list.map((g) => '<tr><td><b>' + esc(g.label) + '</b>' + (g.is_default ? ' <span class="pill">Default</span>' : '') + '</td><td style="font-size:12.5px">' + esc(g.addresses === 'all' || !g.addresses ? 'All addresses' : g.addresses.split(',').join(', ')) + '</td><td>' + esc(g.sender_name || 'Kamakshya Prasad Nayak') + '</td><td style="white-space:nowrap"><button type="button" class="btn sm" data-sigedit="' + esc(g.sig_id) + '">Edit</button> <button type="button" class="btn sm ghost" data-sigdel="' + esc(g.sig_id) + '">Delete</button></td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">No saved signatures yet. Until you add one, each email uses the Gmail signature of the address it is sent from.</div>';
+    if (!e) return h + '<div class="actions" style="margin-top:10px"><button type="button" class="btn primary" data-signew="1">Add a signature</button></div></div>';
+    const chosen = String(e.addresses || 'all').split(',');
+    const all = !e.addresses || e.addresses === 'all';
+    h += '<form id="sig-form" class="section" style="border-top:1px solid var(--line,#ddd);padding-top:12px"><h3 style="margin-top:0">' + (e.sig_id ? 'Edit signature' : 'New signature') + '</h3>' +
+      '<label class="field" for="sg-label">Name of this signature<input id="sg-label" maxlength="80" required value="' + esc(e.label || '') + '" placeholder="e.g. Manish - B2B"></label>' +
+      '<label class="field" for="sg-name">Sender name shown in the From line (optional)<input id="sg-name" maxlength="80" value="' + esc(e.sender_name || '') + '" placeholder="Kamakshya Prasad Nayak"></label>' +
+      '<div class="field"><span>Signature</span><div id="sg-html" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Signature" style="min-height:120px;border:1px solid var(--line,#ccc);border-radius:8px;padding:10px;background:var(--panel,#fff);overflow:auto">' + cleanSigHtml(e.html || '') + '</div>' +
+      '<span class="faint" style="font-size:12.5px">Tip: in Gmail open Settings → See all settings → Signature, select the whole signature, copy it (Ctrl + C) and paste it here (Ctrl + V). Formatting, links and logos come along.</span></div>' +
+      '<fieldset class="field" style="border:0;padding:0;margin:0"><legend>Use it for</legend><label style="display:block"><input type="checkbox" id="sg-all"' + (all ? ' checked' : '') + '> All addresses</label>' +
+      '<div id="sg-addrs" style="columns:2;font-size:13px' + (all ? ';opacity:.5' : '') + '">' + ALL_ADDR.map((a) => '<label style="display:block"><input type="checkbox" class="sg-addr" value="' + esc(a) + '"' + (!all && chosen.includes(a) ? ' checked' : '') + (all ? ' disabled' : '') + '> ' + esc(a) + '</label>').join('') + '</div></fieldset>' +
+      '<label style="display:block;margin:8px 0"><input type="checkbox" id="sg-def"' + (e.is_default ? ' checked' : '') + '> Make this the default for these addresses</label>' +
+      '<div class="actions"><button type="submit" class="btn primary">Save signature</button><button type="button" class="btn" data-sigcancel="1">Cancel</button></div></form>';
+    return h + '</div>';
+  }
+  function wireSigForm() {
+    const f = $('#sig-form'); if (!f) return;
+    const allBox = $('#sg-all');
+    allBox.addEventListener('change', () => { document.querySelectorAll('.sg-addr').forEach((x) => { x.disabled = allBox.checked; }); $('#sg-addrs').style.opacity = allBox.checked ? '.5' : '1'; });
+    f.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const addrs = allBox.checked ? 'all' : Array.from(document.querySelectorAll('.sg-addr:checked')).map((x) => x.value).join(',');
+      if (!addrs) { toast('Tick at least one address, or All addresses.', true); return; }
+      const html = cleanSigHtml($('#sg-html').innerHTML);
+      if (!html.replace(/<[^>]+>|&nbsp;|\s/g, '')) { toast('Paste or type the signature first.', true); return; }
+      const rec = { sig_id: S.sigEdit.sig_id || '', label: $('#sg-label').value.trim(), sender_name: $('#sg-name').value.trim(), html: html, addresses: addrs, is_default: $('#sg-def').checked, active: true };
+      const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
+      try {
+        const j = await inboxApi('sig_save', rec);
+        if (rec.is_default) {
+          const mine = addrs === 'all' ? null : addrs.split(',');
+          for (const g of (S.sigs || [])) {
+            if (g.sig_id === j.sig_id || !g.is_default) continue;
+            const ga = g.addresses === 'all' || !g.addresses ? null : g.addresses.split(',');
+            const overlap = !mine || !ga || ga.some((a) => mine.includes(a));
+            if (overlap) await inboxApi('sig_save', Object.assign({}, g, { is_default: false }));
+          }
+        }
+        toast('Signature saved.'); S.sigEdit = null; await loadSigs(); render();
+      } catch (er) { toast(er.message, true); btn.disabled = false; }
+    });
+  }
+
   function renderSettings() {
     const th = store.get('theme', 'system');
     let h = topbar('Settings', 'Connect this app to your n8n Relationship Engine.');
@@ -929,6 +1074,11 @@
     h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
       JOBS.map((j) => '<div class="panel"><b>' + esc(j[1]) + '</b><span class="faint" style="font-size:12.5px">' + esc(j[2]) + '</span><div><button type="button" class="btn sm primary" data-run="' + j[0] + '">Run</button></div></div>').join('') + '</div>' +
       '<p class="hint-line" style="margin-top:8px">Google Sheet mirror: <a href="' + SHEET_URL + '" target="_blank" rel="noopener">open the sheet</a>. Paste people into its Import tab (keep the header row) and they are added at the next sync.' + (S.data && S.data.suppressed ? ' · ' + S.data.suppressed + ' addresses on the email suppression list.' : '') + '</p></div>';
+    h += sigPanelHtml();
+    if (S.mode === 'live' && (S.reconnect.scan || []).length) {
+      h += '<div class="panel section" style="max-width:640px"><h2>Mailbox scan</h2><p class="faint" style="margin:0 0 8px">Every 20 minutes the engine reads a little further back in each mailbox (headers only, no email text), up to two years. New mail is picked up as it arrives.</p><div class="table-wrap"><table><thead><tr><th>Mailbox</th><th>Read back to</th><th>Messages</th></tr></thead><tbody>' +
+        S.reconnect.scan.slice().sort((a, b) => String(a.mailbox).localeCompare(String(b.mailbox))).map((x) => '<tr><td>' + esc(MB_NAME[x.mailbox] || x.mailbox) + '</td><td>' + (x.done ? 'Done (2 years)' : esc(fmtDate(x.back_to))) + '</td><td>' + esc(x.seen) + '</td></tr>').join('') + '</tbody></table></div></div>';
+    }
     h += '<div class="panel section" style="max-width:640px"><h2>Appearance</h2><label class="field" for="s-theme">Theme<select id="s-theme">' +
       ['system', 'light', 'dark'].map((t) => '<option value="' + t + '"' + (t === th ? ' selected' : '') + '>' + t[0].toUpperCase() + t.slice(1) + '</option>').join('') + '</select></label></div>';
     h += '<div class="panel section" style="max-width:640px"><h2>How it runs</h2><ul class="muted" style="margin:0;padding-left:18px">' +
@@ -1069,6 +1219,7 @@
       });
       const fg = $('#s-forget');
       if (fg) fg.addEventListener('click', () => { store.del('key'); S.key = ''; S.error = ''; load(); toast('Key removed from this device.'); });
+      wireSigForm();
       $('#s-theme').addEventListener('change', (e) => {
         const t = e.target.value; store.set('theme', t);
         if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
@@ -1085,7 +1236,7 @@
   }
 
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete],[data-inboxreply],[data-inboxdone]');
+    const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete],[data-inboxreply],[data-inboxdone],[data-signew],[data-sigedit],[data-sigdel],[data-sigcancel],[data-rcdraft],[data-rcadd],[data-rcsnooze],[data-rcnever],[data-rcmore]');
     if (!t) return;
     if (t.hasAttribute('data-run')) { runJob(t.getAttribute('data-run'), t.getAttribute('data-camp') ? { campaign_code: t.getAttribute('data-camp'), limit: 12 } : {}, t); return; }
     if (t.hasAttribute('data-campedit')) { S.campEdit = t.getAttribute('data-campedit') || null; render(); window.scrollTo(0, 0); return; }
@@ -1097,15 +1248,45 @@
       api('content_delete', { content_id: id }).then((j) => { toast(j.message || 'Deleted.'); S.libEdit = null; return load(true); }).catch((er) => toast(er.message, true));
       return;
     }
+    if (t.hasAttribute('data-rcmore')) { S.rcAll = !S.rcAll; render(); return; }
+    if (t.hasAttribute('data-rcdraft') || t.hasAttribute('data-rcadd') || t.hasAttribute('data-rcsnooze') || t.hasAttribute('data-rcnever')) {
+      const email = t.getAttribute('data-rcdraft') || t.getAttribute('data-rcadd') || t.getAttribute('data-rcsnooze') || t.getAttribute('data-rcnever');
+      const r = (S.reconnect.list || []).find((x) => x.email === email); if (!r) return;
+      const drop = () => { S.reconnect.list = S.reconnect.list.filter((x) => x.email !== email); S.reconnect.total = Math.max(0, S.reconnect.total - 1); render(); };
+      if (t.hasAttribute('data-rcnever') && !confirm('Remove ' + r.name + ' from the reconnect list for good? Nothing is deleted.')) return;
+      t.disabled = true;
+      if (t.hasAttribute('data-rcdraft')) {
+        t.textContent = 'Writing…';
+        rcApi('draft', { email: email }).then((j) => { toast('Draft ready. Review it, pick the From address and signature, then send.'); r.has_draft = true; return load(true).then(() => { S.drawer = j.person_key || r.person_key; renderDrawer(); }); })
+          .catch((er) => { toast(er.message, true); t.disabled = false; t.textContent = 'Draft a note'; });
+      } else if (t.hasAttribute('data-rcadd')) {
+        rcApi('add', { email: email }).then((j) => { toast(j.message || 'Added.'); drop(); setTimeout(() => { load(true); loadReconnect(); }, 240000); }).catch((er) => { toast(er.message, true); t.disabled = false; });
+      } else {
+        rcApi('snooze', t.hasAttribute('data-rcnever') ? { email: email, never: true } : { email: email, days: 90 }).then((j) => { toast(j.message || 'Done.'); drop(); }).catch((er) => { toast(er.message, true); t.disabled = false; });
+      }
+      return;
+    }
+    if (t.hasAttribute('data-signew')) { S.sigEdit = { addresses: 'all' }; render(); const l = $('#sg-label'); if (l) l.focus(); return; }
+    if (t.hasAttribute('data-sigcancel')) { S.sigEdit = null; render(); return; }
+    if (t.hasAttribute('data-sigedit')) { const g = (S.sigs || []).find((x) => x.sig_id === t.getAttribute('data-sigedit')); if (g) { S.sigEdit = Object.assign({}, g); render(); const p = $('#sig-form'); if (p) p.scrollIntoView({ block: 'start' }); } return; }
+    if (t.hasAttribute('data-sigdel')) {
+      const g = (S.sigs || []).find((x) => x.sig_id === t.getAttribute('data-sigdel')); if (!g) return;
+      if (!confirm('Delete the signature "' + g.label + '"? Emails already sent are not affected.')) return;
+      t.disabled = true;
+      inboxApi('sig_delete', { sig_id: g.sig_id }).then(() => { toast('Signature deleted.'); return loadSigs(); }).then(() => render()).catch((er) => { toast(er.message, true); t.disabled = false; });
+      return;
+    }
     if (t.hasAttribute('data-inboxreply') || t.hasAttribute('data-inboxdone')) {
       const id = t.getAttribute('data-inboxreply') || t.getAttribute('data-inboxdone');
       const m = (S.inbox || []).find((x) => x.gmail_id === id); if (!m) return;
       if (t.hasAttribute('data-inboxdone')) { t.disabled = true; inboxApi('done', { gmail_id: id }).then(() => { S.inbox = S.inbox.filter((x) => x.gmail_id !== id); render(); }).catch((er) => { toast(er.message, true); t.disabled = false; }); return; }
       const ta = document.getElementById('ib-' + id); const body = ta ? ta.value.trim() : '';
       if (!body) { toast('Write your reply first.', true); if (ta) ta.focus(); return; }
-      if (!confirm('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?')) return;
+      const ss = document.getElementById('ibs-' + id); const sigId = ss ? ss.value : '';
+      const sigName = ss && ss.selectedIndex >= 0 ? ss.options[ss.selectedIndex].text : '';
+      if (!confirm('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?\nSignature: ' + sigName)) return;
       t.disabled = true;
-      inboxApi('reply', { person_key: m.person_key, gmail_id: id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, subject: m.subject, body: body })
+      inboxApi('reply', { person_key: m.person_key, gmail_id: id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, to_address: m.to_address || '', signature_id: sigId, subject: m.subject, body: body })
         .then((j) => { toast(j.message || 'Sent.'); S.inbox = S.inbox.filter((x) => x.gmail_id !== id); delete S.threads[m.person_key]; render(); })
         .catch((er) => { toast(er.message, true); t.disabled = false; });
       return;
@@ -1114,10 +1295,12 @@
       const c = contactByKey(t.getAttribute('data-sendmail')); if (!c) return;
       if (/\[[^\]]{2,80}\]/.test(c.pending_message || '')) { toast('The draft still has a [placeholder]. Edit it in your email app or fill it first; it will not be sent with placeholders.', true); return; }
       const fsel = document.getElementById('d-from'); const mbox = fsel && S.drawer === c.person_key ? fsel.value : '';
-      if (!confirm('Send this email now to ' + c.email + ' from ' + (mbox ? mbAddr(mbox) : (c.send_mailbox ? mbAddr(c.send_mailbox) : 'the campaign\'s address')) + '? An unsubscribe line is added at the bottom.')) return;
+      const dsig = document.getElementById('d-sig'); const sigId = dsig && S.drawer === c.person_key ? dsig.value : '';
+      const sigName = dsig && dsig.selectedIndex >= 0 ? dsig.options[dsig.selectedIndex].text : '';
+      if (!confirm('Send this email now to ' + c.email + ' from ' + (mbox ? mbAddr(mbox) : (c.send_mailbox ? mbAddr(c.send_mailbox) + ' (or the address they last wrote to)' : 'the campaign\'s address')) + '?\nSignature: ' + sigName + '\nAn unsubscribe line is added at the bottom.')) return;
       if (S.mode === 'demo') { toast('Demo mode: nothing was sent.'); return; }
       t.disabled = true;
-      api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '', mailbox: mbox }).then((j) => { toast(j.message || 'Sent.'); delete S.threads[c.person_key]; return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
+      api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '', mailbox: mbox, from: mbox.includes('@') ? mbox : '', signature_id: sigId }).then((j) => { toast(j.message || 'Sent.'); delete S.threads[c.person_key]; return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
       return;
     }
     if (t.hasAttribute('data-delete')) {
@@ -1137,6 +1320,13 @@
       const col = t.getAttribute('data-sort');
       S.sort = S.sort.col === col ? { col, dir: -S.sort.dir } : { col, dir: col === 'full_name' || col === 'next_followup_date' ? 1 : -1 };
       render();
+    }
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.id === 'd-from') {
+      const c = contactByKey(S.drawer); const ds = document.getElementById('d-sig'); if (!ds) return;
+      const addr = e.target.value ? mbAddr(e.target.value) : (c && c.send_mailbox ? mbAddr(c.send_mailbox) : '');
+      ds.innerHTML = sigOptionsHtml(addr, ds.value);
     }
   });
   document.addEventListener('keydown', (e) => {
