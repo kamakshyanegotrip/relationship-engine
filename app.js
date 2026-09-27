@@ -366,6 +366,7 @@
     { id: 'pipeline', label: 'Pipeline' },
     { id: 'contacts', label: 'Contacts' },
     { id: 'campaigns', label: 'Campaigns' },
+    { id: 'bulk', label: 'Bulk email' },
     { id: 'library', label: 'Library' },
     { id: 'add', label: 'Add people' },
     { id: 'guide', label: 'How it works' },
@@ -381,6 +382,7 @@
       '@media (max-width:760px){.mobile-nav{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(62px,1fr);overflow-x:auto;scrollbar-width:none}}' +
       '.pill.s-new{background:var(--surface-2);color:var(--ink-2)}.progress{height:6px;border-radius:99px;background:var(--surface-2);overflow:hidden;min-width:70px}.progress>i{display:block;height:100%;background:var(--accent)}' +
       '.info{display:flex;flex-direction:column;gap:6px;font-size:13.5px}.info b{font-weight:600}.opp{border-left:3px solid var(--saffron);background:var(--saffron-soft);padding:8px 10px;border-radius:6px;font-size:13.5px}' +
+      '@media (max-width:900px){#bk-edit-form{grid-template-columns:1fr!important}#bk-edit-form>.panel{position:static!important}}.chip input{accent-color:var(--accent)}' +
       '.runs{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}.runs .panel{gap:8px;display:flex;flex-direction:column}' +
       '</style>');
   } catch (e) { /* styles are optional */ }
@@ -405,7 +407,7 @@
       (v.id === 'today' && todayCount ? '<span class="count num">' + todayCount + '</span>' : '') + '</button>').join('');
     $('#nav').innerHTML = navHtml;
     $('#mobile-nav').innerHTML = VIEWS.map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
-      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : (v.id === 'campaigns' ? 'Camps' : v.label))) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
+      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : (v.id === 'campaigns' ? 'Camps' : (v.id === 'bulk' ? 'Bulk' : v.label)))) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
 
     const dot = $('#conn-dot'); const txt = $('#conn-text');
     dot.className = 'dot ' + (S.mode === 'live' ? 'live' : 'demo');
@@ -958,6 +960,406 @@
     return h;
   }
 
+  // ---------- BULK EMAIL (lists, campaigns, warm-up) ----------
+  const BULK_LISTS_API = 'https://n8n.assignover.in/webhook/pre-bulk-api';
+  const BULK_CAMP_API = 'https://n8n.assignover.in/webhook/pre-bulk-camp';
+  const BULK_RUN_API = 'https://n8n.assignover.in/webhook/pre-bulk-run';
+  const BULK_TEST_API = 'https://n8n.assignover.in/webhook/pre-bulk-test';
+  const BK = { tab: store.get('bktab', 'campaigns'), loaded: false, loading: false, buckets: [], campaigns: [], warmup: [], plan: null,
+    rows: { bucket: '', filter: 'all', q: '', offset: 0, total: 0, list: [] }, bucketEdit: null, importFor: '', imp: null, fromFor: '',
+    edit: null, detail: '', sends: { filter: 'all', list: [], total: 0 }, sample: [], sampleBucket: '', sampleIdx: 0 };
+  const bkPost = async (url, op, payload) => {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ key: S.key, op: op, payload: payload || {} })) });
+    let j = null; try { j = await r.json(); } catch (e) { j = null; }
+    if (!r.ok || !j) throw new Error((j && j.message) || 'The bulk service answered with status ' + r.status + '.');
+    if (j.ok === false) throw new Error(j.message || 'The request did not go through.');
+    return j;
+  };
+  const MB_KEYS = MAILBOXES.map((m) => m[0]);
+  const mbLabel = (k) => { const m = MAILBOXES.find((x) => x[0] === k); return m ? m[1] : k; };
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) + '%' : '—');
+  const bkBucket = (id) => BK.buckets.find((b) => b.bucket_id === id) || {};
+  const bkCamp = (id) => BK.campaigns.find((c) => c.campaign_id === id) || null;
+  const BK_STATUS = { draft: ['Draft', '#6e7781'], running: ['Sending', '#1a7f37'], paused: ['Paused', '#9a6700'], done: ['Finished', '#2f81f7'] };
+  const bkPill = (s) => { const x = BK_STATUS[s] || [s || '—', '#6e7781']; return '<span class="pill" style="border-color:' + x[1] + ';color:' + x[1] + '">' + esc(x[0]) + '</span>'; };
+  const VSTAT = { valid: ['Valid', '#1a7f37'], pending: ['Checking', '#2f81f7'], risky: ['Risky', '#9a6700'], invalid: ['Invalid', '#cf222e'] };
+  const vPill = (v, why) => { const x = VSTAT[v] || [v || '—', '#6e7781']; return '<span class="pill" title="' + esc(why || '') + '" style="border-color:' + x[1] + ';color:' + x[1] + '">' + esc(x[0]) + '</span>'; };
+  // merge fields: {first_name}, {organisation}, {city}, {full_name}, {email}, any CSV column, {field|fallback}
+  const normKey = (k) => String(k).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const fieldsOf = (r) => { const f = { first_name: r.first_name, full_name: r.full_name, name: r.full_name, organisation: r.organisation, organization: r.organisation, company: r.organisation, city: r.city, email: r.email }; let x = {}; try { x = JSON.parse(r.extra || '{}'); } catch (e) { x = {}; } Object.keys(x).forEach((k) => { const nk = normKey(k); if (nk && !String(f[nk] || '').trim()) f[nk] = x[k]; }); return f; };
+  const mergeT = (t, f) => { const miss = []; const text = String(t || '').replace(/\{\s*([a-zA-Z0-9_ .-]{1,40}?)\s*(?:\|([^{}]{0,60}))?\}/g, (m, k, fb) => { const v = String(f[normKey(k)] == null ? '' : f[normKey(k)]).trim(); if (v) return v; if (fb !== undefined) return fb.trim(); miss.push(k.trim()); return ''; }); return { text, miss }; };
+  const parseCsv = (text) => {
+    const src = String(text || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    const first = src.split('\n')[0] || '';
+    const sep = first.includes('\t') ? '\t' : (first.split(';').length > first.split(',').length ? ';' : ',');
+    const rows = []; let row = []; let cur = ''; let q = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (q) { if (ch === '"' && src[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === sep) { row.push(cur.trim()); cur = ''; } else if (ch === '\n') { row.push(cur.trim()); rows.push(row); row = []; cur = ''; } else cur += ch;
+    }
+    if (cur || row.length) { row.push(cur.trim()); rows.push(row); }
+    const clean = rows.filter((r) => r.some((c) => c));
+    if (!clean.length) return { headers: [], rows: [] };
+    let headers = clean[0].map((h, i) => h || 'column_' + (i + 1));
+    let body = clean.slice(1);
+    if (headers.some((h) => /@/.test(h))) { headers = headers.map((h, i) => (/@/.test(h) ? 'email' : 'column_' + (i + 1))); body = clean; }
+    return { headers, rows: body.map((r) => { const o = {}; headers.forEach((h, i) => { if (r[i] !== undefined && r[i] !== '') o[h] = r[i]; }); return o; }) };
+  };
+  const emailCol = (headers) => headers.find((h) => /^(e-?mail|email ?address|e-?mail ?id|mail)$/i.test(h.trim())) || headers.find((h) => /mail/i.test(h));
+
+  async function loadBulk(force) {
+    if (S.mode !== 'live') return;
+    if (BK.loading || (BK.loaded && !force)) return;
+    BK.loading = true;
+    try {
+      const [l, c] = await Promise.all([bkPost(BULK_LISTS_API, 'buckets'), bkPost(BULK_CAMP_API, 'list')]);
+      BK.buckets = l.buckets || []; BK.campaigns = c.campaigns || []; BK.warmup = c.warmup || [];
+      BK.loaded = true;
+    } catch (e) { toast(e.message, true); } finally { BK.loading = false; if (S.view === 'bulk') render(); }
+  }
+  async function loadBkRows() {
+    if (!BK.rows.bucket) return;
+    try { const j = await bkPost(BULK_LISTS_API, 'rows', { bucket_id: BK.rows.bucket, filter: BK.rows.filter, q: BK.rows.q, offset: BK.rows.offset, limit: 50 }); BK.rows.list = j.rows || []; BK.rows.total = j.total || 0; }
+    catch (e) { toast(e.message, true); }
+    if (S.view === 'bulk') render();
+  }
+  async function loadSample(bucketId) {
+    if (!bucketId || S.mode !== 'live') { BK.sample = []; return; }
+    if (BK.sampleBucket === bucketId && BK.sample.length) return;
+    try { const j = await bkPost(BULK_LISTS_API, 'rows', { bucket_id: bucketId, filter: 'valid', limit: 200 }); BK.sample = (j.rows || []).filter((r) => r.status === 'active'); BK.sampleBucket = bucketId; BK.sampleIdx = 0; }
+    catch (e) { BK.sample = []; }
+    if (S.view === 'bulk' && BK.edit) bkPreview();
+  }
+  async function loadSends() {
+    if (!BK.detail) return;
+    try { const j = await bkPost(BULK_CAMP_API, 'sends', { campaign_id: BK.detail, filter: BK.sends.filter }); BK.sends.list = j.sends || []; BK.sends.total = j.total || 0; }
+    catch (e) { toast(e.message, true); }
+    if (S.view === 'bulk') render();
+  }
+  async function loadPlan(btn) {
+    if (btn) btn.disabled = true;
+    try { BK.plan = await bkPost(BULK_RUN_API, 'plan'); } catch (e) { toast(e.message, true); }
+    if (btn) btn.disabled = false;
+    if (S.view === 'bulk') render();
+  }
+
+  function renderBulk() {
+    const tabs = [['campaigns', 'Campaigns'], ['lists', 'Lists & buckets'], ['mailboxes', 'Mailboxes & sending']];
+    let h = topbar('Bulk email', 'Your own GMass: lists in buckets, checked addresses, warm-up limits per mailbox, open tracking and automatic follow-ups.',
+      '<button class="btn primary" type="button" data-bk="newcamp">New campaign</button>');
+    if (S.mode !== 'live') return h + '<div class="empty">Connect your access key in Settings to use bulk email. Nothing is sent from demo mode.</div>';
+    h += '<div class="chips" role="tablist" style="margin-bottom:14px">' + tabs.map((t) => '<button type="button" class="chip' + (BK.tab === t[0] ? ' on' : '') + '" data-bk="tab" data-id="' + t[0] + '" aria-pressed="' + (BK.tab === t[0]) + '">' + t[1] + '</button>').join('') + '</div>';
+    if (!BK.loaded) return h + '<div class="empty">' + (BK.loading ? 'Loading lists and campaigns…' : 'Loading…') + '</div>';
+    if (BK.edit) return h + bkEditor();
+    if (BK.tab === 'lists') return h + bkLists();
+    if (BK.tab === 'mailboxes') return h + bkMailboxes();
+    return h + (BK.detail ? bkDetail() : bkCampaigns());
+  }
+
+  function bkCampaigns() {
+    const cs = BK.campaigns;
+    if (!cs.length) return '<div class="empty">No bulk campaigns yet. Import a list into a bucket (Lists & buckets), then press <b>New campaign</b>.</div>';
+    const rows = cs.map((c) => {
+      const s = c.stats || {}; const b = bkBucket(c.bucket_id);
+      let steps = 1; try { steps += JSON.parse(c.followups || '[]').length; } catch (e) { /* none */ }
+      const act = c.status === 'running' ? '<button class="btn sm" type="button" data-bk="pause" data-id="' + esc(c.campaign_id) + '">Pause</button>'
+        : (c.status === 'done' ? '' : '<button class="btn sm primary" type="button" data-bk="start" data-id="' + esc(c.campaign_id) + '">' + (c.status === 'paused' ? 'Resume' : 'Start') + '</button>');
+      return '<tr><td><b>' + esc(c.name) + '</b><div class="faint">' + esc(b.name || c.bucket_id) + ' · ' + steps + ' email' + (steps > 1 ? 's' : '') + ' · ' + esc(c.sendable || 0) + ' sendable' + (c.notes ? '<br><span style="color:#9a6700">' + esc(c.notes) + '</span>' : '') + '</div></td>' +
+        '<td>' + bkPill(c.status) + '</td><td class="r num">' + esc(s.people || 0) + (s.today ? '<div class="faint">' + s.today + ' today</div>' : '') + '</td><td class="r num">' + pct(s.opened, s.people) + '</td><td class="r num">' + pct(s.replied, s.people) + '</td><td class="r num">' + esc((s.bounced || 0) + ' / ' + (s.unsubscribed || 0)) + '</td>' +
+        '<td><div class="actions" style="justify-content:flex-end">' + act + '<button class="btn sm ghost" type="button" data-bk="detail" data-id="' + esc(c.campaign_id) + '">Results</button><button class="btn sm ghost" type="button" data-bk="edit" data-id="' + esc(c.campaign_id) + '">Edit</button></div></td></tr>';
+    }).join('');
+    return '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Campaign</th><th>Status</th><th class="r">People sent</th><th class="r">Opened</th><th class="r">Replied</th><th class="r">Bounced / unsub</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<p class="hint-line" style="margin-top:10px">Opens are counted when the recipient\'s mail app loads images, so treat them as a rough signal. Replies, bounces and unsubscribes are exact; each one stops that person\'s follow-ups.</p>';
+  }
+
+  function bkDetail() {
+    const c = bkCamp(BK.detail); if (!c) { BK.detail = ''; return bkCampaigns(); }
+    const s = c.stats || {}; const by = s.by_step || {};
+    const card = (n, l, sub) => '<div class="panel" style="gap:2px;display:flex;flex-direction:column;min-width:120px"><div class="num" style="font-size:22px;font-weight:700">' + n + '</div><div class="faint">' + l + (sub ? ' · ' + sub : '') + '</div></div>';
+    let F = []; try { F = JSON.parse(c.followups || '[]'); } catch (e) { F = []; }
+    let h = '<div class="actions" style="margin-bottom:10px"><button class="btn ghost" type="button" data-bk="back">← All campaigns</button>' + (c.status === 'running' ? '<button class="btn" type="button" data-bk="pause" data-id="' + esc(c.campaign_id) + '">Pause</button>' : (c.status !== 'done' ? '<button class="btn primary" type="button" data-bk="start" data-id="' + esc(c.campaign_id) + '">' + (c.status === 'paused' ? 'Resume' : 'Start') + '</button>' : '')) + '<button class="btn ghost" type="button" data-bk="edit" data-id="' + esc(c.campaign_id) + '">Edit</button></div>';
+    h += '<h2 style="margin:0 0 4px">' + esc(c.name) + ' ' + bkPill(c.status) + '</h2><p class="muted" style="margin:0 0 12px">' + esc(bkBucket(c.bucket_id).name || c.bucket_id) + ' · from ' + esc((c.mailboxes || bkBucket(c.bucket_id).mailboxes || '').split(',').filter(Boolean).map(mbLabel).join(', ')) + ' · ' + esc(c.send_window || '09:30-18:30|1-6') + (s.last_sent ? ' · last sent ' + esc(fmtDate(s.last_sent.slice(0, 10))) : '') + '</p>';
+    if (c.notes) h += '<div class="opp" style="margin-bottom:12px">' + esc(c.notes) + '</div>';
+    h += '<div class="runs" style="margin-bottom:12px">' + card(esc(s.people || 0), 'people emailed', (s.sent || 0) + ' emails') + card(pct(s.opened, s.people), 'opened', (s.opened || 0)) + card(pct(s.clicked, s.people), 'clicked', (s.clicked || 0)) + card(pct(s.replied, s.people), 'replied', (s.replied || 0)) + card(esc(s.bounced || 0), 'bounced') + card(esc(s.unsubscribed || 0), 'unsubscribed') + (s.failed ? card(esc(s.failed), 'failed to send') : '') + '</div>';
+    h += '<div class="panel table-wrap" style="padding:0;margin-bottom:12px"><table><thead><tr><th>Email</th><th>Waits</th><th class="r">Sent</th><th class="r">Opened</th><th class="r">Clicked</th></tr></thead><tbody>' +
+      [{ days: 0, body: c.body }].concat(F).map((f, i) => { const t = by[i] || {}; return '<tr><td>' + (i ? 'Follow-up ' + i : 'First email') + '<div class="faint">' + esc(String(f.body || '').slice(0, 90)) + '</div></td><td>' + (i ? esc(f.days) + ' days' : '—') + '</td><td class="r num">' + esc(t.sent || 0) + '</td><td class="r num">' + pct(t.opened, t.sent) + '</td><td class="r num">' + pct(t.clicked, t.sent) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    const fl = [['all', 'All'], ['replied', 'Replied'], ['opened', 'Opened'], ['clicked', 'Clicked'], ['bounced', 'Bounced'], ['unsubscribed', 'Unsubscribed'], ['failed', 'Failed']];
+    h += '<div class="chips" style="margin-bottom:8px">' + fl.map((f) => '<button type="button" class="chip' + (BK.sends.filter === f[0] ? ' on' : '') + '" data-bk="sendsf" data-id="' + f[0] + '">' + f[1] + '</button>').join('') + '</div>';
+    const gm = (x) => x.thread_id ? '<a href="https://mail.google.com/mail/u/?authuser=' + encodeURIComponent(x.from || '') + '#all/' + encodeURIComponent(x.thread_id) + '" target="_blank" rel="noopener">open in Gmail</a>' : '';
+    h += BK.sends.list.length ? '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>To</th><th>Email</th><th>Sent</th><th>Result</th><th></th></tr></thead><tbody>' + BK.sends.list.map((x) => '<tr><td>' + esc(x.email) + '<div class="faint">from ' + esc(x.from || mbLabel(x.mailbox)) + '</div></td><td>' + (Number(x.step) ? 'Follow-up ' + esc(x.step) : 'First') + '</td><td>' + esc(fmtDate(String(x.sent_at || '').slice(0, 10))) + '</td><td>' +
+      [x.replied_at ? '<b style="color:#1a7f37">Replied</b>' : '', x.bounced === true ? '<b style="color:#cf222e">Bounced</b>' : '', x.unsubscribed === true ? 'Unsubscribed' : '', x.clicked_at ? 'Clicked' : '', x.opened_at ? 'Opened' + (Number(x.opens) > 1 ? ' ×' + esc(x.opens) : '') : '', x.status === 'failed' ? '<b style="color:#cf222e">Not sent</b>' : ''].filter(Boolean).join(' · ') + '</td><td>' + gm(x) + '</td></tr>').join('') + '</tbody></table></div>' + (BK.sends.total > BK.sends.list.length ? '<p class="hint-line">Showing the latest ' + BK.sends.list.length + ' of ' + BK.sends.total + '.</p>' : '')
+      : '<div class="empty">' + (BK.sends.total === 0 ? 'Nothing in this view yet.' : 'Loading…') + '</div>';
+    return h;
+  }
+
+  function bkLists() {
+    let h = '<div class="actions" style="margin-bottom:10px"><button class="btn" type="button" data-bk="newbucket">New bucket</button><button class="btn ghost" type="button" data-bk="verify">Check pending addresses now</button></div>';
+    if (BK.bucketEdit) {
+      const b = BK.bucketEdit; const sel = String(b.mailboxes || '').split(',');
+      h += '<form class="panel section" id="bk-bucket-form"><div class="panel-head" style="margin:0"><h2>' + (b.bucket_id ? 'Edit bucket' : 'New bucket') + '</h2><button type="button" class="btn ghost" data-bk="closebucket">Close</button></div><div class="form-grid">' +
+        '<label class="field" for="bb-name">Name<input id="bb-name" required value="' + esc(b.name || '') + '" placeholder="e.g. Travel agents – Odisha"></label>' +
+        '<label class="field" for="bb-cat">Category<input id="bb-cat" value="' + esc(b.category || '') + '" placeholder="e.g. Travel agents, Hotels, Corporates, Academics"></label>' +
+        '<label class="field span" for="bb-purpose">Purpose<input id="bb-purpose" value="' + esc(b.purpose || '') + '" placeholder="e.g. B2B deals, contracting, partnership, research collaboration"></label>' +
+        '<div class="field span">Sends from (spread across these mailboxes)<div class="chips" style="margin-top:6px">' + MAILBOXES.map((m) => '<label class="chip"><input type="checkbox" class="bb-mb" value="' + m[0] + '"' + (sel.includes(m[0]) ? ' checked' : '') + ' style="margin-right:6px">' + esc(m[1]) + '</label>').join('') + '</div></div>' +
+        '<label class="field span" for="bb-notes">Notes<input id="bb-notes" value="' + esc(b.notes || '') + '"></label>' +
+        '<label class="field"><span><input type="checkbox" id="bb-active"' + (b.active === false ? '' : ' checked') + '> Active</span></label></div>' +
+        '<div class="actions"><button class="btn primary" type="submit">Save bucket</button></div></form>';
+    }
+    if (BK.importFor) h += bkImportPanel();
+    if (BK.fromFor) h += bkFromContactsPanel();
+    const rows = BK.buckets.map((b) => { const s = b.stats || {};
+      return '<tr' + (b.active === false ? ' style="opacity:.55"' : '') + '><td><b>' + esc(b.name) + '</b><div class="faint">' + esc([b.category, b.purpose].filter(Boolean).join(' · ')) + '</div><div class="faint">' + esc(String(b.mailboxes || '').split(',').filter(Boolean).map(mbLabel).join(', ') || 'no mailbox set') + '</div></td>' +
+        '<td class="r num">' + esc(s.total || 0) + '</td><td class="r num"><b>' + esc(s.sendable || 0) + '</b></td><td class="r num">' + esc(s.pending || 0) + '</td><td class="r num">' + esc((s.invalid || 0) + (s.risky ? ' + ' + s.risky + ' risky' : '')) + '</td><td class="r num">' + esc((s.suppressed || 0) + (s.unsubscribed || 0) + (s.bounced || 0)) + '</td>' +
+        '<td><div class="actions" style="justify-content:flex-end"><button class="btn sm" type="button" data-bk="import" data-id="' + esc(b.bucket_id) + '">Import</button><button class="btn sm ghost" type="button" data-bk="fromcontacts" data-id="' + esc(b.bucket_id) + '">From contacts</button><button class="btn sm ghost" type="button" data-bk="rows" data-id="' + esc(b.bucket_id) + '">View list</button><button class="btn sm ghost" type="button" data-bk="editbucket" data-id="' + esc(b.bucket_id) + '">Edit</button></div></td></tr>'; }).join('');
+    h += '<div class="panel table-wrap" style="padding:0"><table><thead><tr><th>Bucket</th><th class="r">Total</th><th class="r">Ready to send</th><th class="r">Checking</th><th class="r">Invalid</th><th class="r">Do not email</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    h += '<p class="hint-line" style="margin-top:10px">Every address is checked when it comes in: format, common typos (gmial.com), throwaway and no-reply addresses, then a mail-server lookup for company domains (every 15 minutes). Only <b>valid</b> addresses are ever emailed. Anyone who unsubscribed, bounced or is marked do-not-contact anywhere in the engine is blocked.</p>';
+    if (BK.rows.bucket) h += bkRowsPanel();
+    return h;
+  }
+
+  function bkImportPanel() {
+    const b = bkBucket(BK.importFor); const imp = BK.imp;
+    let h = '<div class="panel section" id="bk-import"><div class="panel-head" style="margin:0"><h2>Import into ' + esc(b.name || '') + '</h2><button type="button" class="btn ghost" data-bk="closeimport">Close</button></div>' +
+      '<p class="muted" style="margin:0">Choose a CSV file, or copy cells from Google Sheets / Excel (with the header row) and paste them below. Needed: an <b>Email</b> column. Recognised: Name, First name, Company / Organisation, City. Any other column (for example Package or Website) is kept and can be used as {package} in the email.</p>' +
+      '<div class="form-grid"><label class="field" for="bk-file">CSV file<input id="bk-file" type="file" accept=".csv,.tsv,.txt,text/csv"></label>' +
+      '<label class="field" for="bk-src">Source label<input id="bk-src" value="' + esc((imp && imp.source) || '') + '" placeholder="e.g. TAAI directory 2026, GMass export"></label>' +
+      '<label class="field span" for="bk-paste">Or paste rows<textarea id="bk-paste" style="min-height:110px" placeholder="Email	Name	Company	City&#10;anil@example.com	Anil Das	Anil Travels	Puri"></textarea></label></div>' +
+      '<div class="actions"><button class="btn" type="button" data-bk="parse">Read rows</button></div>';
+    if (imp && imp.rows) {
+      const ec = emailCol(imp.headers || []);
+      h += '<div class="info"><div><b>' + imp.rows.length + '</b> rows found. Columns: ' + esc(imp.headers.join(', ')) + '</div>' + (ec ? '<div>Email column: <b>' + esc(ec) + '</b></div>' : '<div style="color:#cf222e">No email column found. Rename the column to Email and read again.</div>') + '</div>';
+      if (imp.rows.length) h += '<div class="panel table-wrap" style="padding:0;margin:8px 0"><table><thead><tr>' + imp.headers.slice(0, 6).map((x) => '<th>' + esc(x) + '</th>').join('') + '</tr></thead><tbody>' + imp.rows.slice(0, 5).map((r) => '<tr>' + imp.headers.slice(0, 6).map((x) => '<td>' + esc(r[x] || '') + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+      if (ec && imp.rows.length) h += '<div class="actions"><button class="btn primary" type="button" data-bk="doimport"' + (imp.busy ? ' disabled' : '') + '>' + (imp.busy ? 'Adding… ' + esc(imp.progress || '') : 'Add ' + imp.rows.length + ' rows to ' + esc(b.name || '')) + '</button></div>';
+      if (imp.result) h += '<div class="opp" style="margin-top:8px">' + esc(imp.result) + '</div>';
+    }
+    return h + '</div>';
+  }
+
+  function bkFromContactsPanel() {
+    const b = bkBucket(BK.fromFor);
+    return '<form class="panel section" id="bk-from-form"><div class="panel-head" style="margin:0"><h2>Add engine contacts to ' + esc(b.name || '') + '</h2><button type="button" class="btn ghost" data-bk="closefrom">Close</button></div>' +
+      '<p class="muted" style="margin:0">Adds people already in the Relationship Engine who have a verified, likely, found, provided or known email. Leave boxes empty to match everyone.</p><div class="form-grid">' +
+      '<label class="field" for="bf-camp">Campaign<select id="bf-camp">' + campOptionsHtml('', 'Any campaign') + '</select></label>' +
+      '<label class="field" for="bf-city">City contains<input id="bf-city" placeholder="e.g. Bhubaneswar"></label>' +
+      '<label class="field" for="bf-stage">Stage<select id="bf-stage"><option value="">Any stage</option>' + STAGES.filter((s) => s.group !== 'dead').map((s) => '<option value="' + s.key + '">' + esc(s.label) + '</option>').join('') + '</select></label>' +
+      '<label class="field" for="bf-text">Organisation / title / industry contains<input id="bf-text" placeholder="e.g. hospital, travel, professor"></label></div>' +
+      '<div class="actions"><button class="btn primary" type="submit">Add matching contacts</button></div></form>';
+  }
+
+  function bkRowsPanel() {
+    const b = bkBucket(BK.rows.bucket); const R = BK.rows;
+    const fl = [['all', 'All'], ['valid', 'Valid'], ['pending', 'Checking'], ['risky', 'Risky'], ['invalid', 'Invalid'], ['suppressed', 'Do not email'], ['replied', 'Replied'], ['unsubscribed', 'Unsubscribed'], ['bounced', 'Bounced'], ['removed', 'Removed']];
+    let h = '<div class="panel section" id="bk-rows"><div class="panel-head" style="margin:0"><h2>' + esc(b.name || '') + ' · ' + esc(R.total) + ' rows</h2><button type="button" class="btn ghost" data-bk="closerows">Close</button></div>' +
+      '<div class="chips">' + fl.map((f) => '<button type="button" class="chip' + (R.filter === f[0] ? ' on' : '') + '" data-bk="rowsf" data-id="' + f[0] + '">' + f[1] + '</button>').join('') + '</div>' +
+      '<label class="field" for="bk-rq" style="max-width:360px">Search<input id="bk-rq" value="' + esc(R.q) + '" placeholder="email, name, company or city"></label>';
+    h += R.list.length ? '<div class="table-wrap"><table><thead><tr><th>Email</th><th>Name / company</th><th>Check</th><th>Status</th><th class="r">Sent</th><th></th></tr></thead><tbody>' + R.list.map((r) => '<tr' + (r.status !== 'active' ? ' style="opacity:.6"' : '') + '><td>' + esc(r.email) + '<div class="faint">' + esc(r.source || '') + ' · ' + esc(fmtDate(r.added_on)) + '</div></td><td>' + esc(r.full_name || r.first_name || '') + '<div class="faint">' + esc([r.organisation, r.city].filter(Boolean).join(', ')) + '</div></td><td>' + vPill(r.verify_status, r.verify_reason) + '<div class="faint" style="font-size:11.5px">' + esc(r.verify_reason || '') + '</div></td><td>' + esc(r.status) + '</td><td class="r num">' + esc(r.sends || 0) + '</td><td>' +
+      (r.status === 'active' ? '<button class="btn sm ghost" type="button" data-bk="rowremove" data-id="' + esc(r.row_key) + '">Remove</button>' : (['removed', 'replied'].includes(r.status) ? '<button class="btn sm ghost" type="button" data-bk="rowrestore" data-id="' + esc(r.row_key) + '">Restore</button>' : '')) + '</td></tr>').join('') + '</tbody></table></div>' : '<div class="empty">No rows in this view.</div>';
+    const pages = Math.ceil(R.total / 50);
+    if (pages > 1) h += '<div class="actions"><button class="btn sm" type="button" data-bk="rowspage" data-id="-1"' + (R.offset ? '' : ' disabled') + '>Previous</button><span class="faint">Page ' + (Math.floor(R.offset / 50) + 1) + ' of ' + pages + '</span><button class="btn sm" type="button" data-bk="rowspage" data-id="1"' + (R.offset + 50 < R.total ? '' : ' disabled') + '>Next</button></div>';
+    return h + '</div>';
+  }
+
+  function bkMailboxes() {
+    const P = BK.plan;
+    const info = {}; ((P && P.mailboxes) || []).forEach((m) => { info[m.mailbox] = m; });
+    const warm = {}; BK.warmup.forEach((w) => { warm[w.mailbox] = w; });
+    const RAMP = [50, 100, 200, 350, 480];
+    const today = todayISO();
+    const rows = MAILBOXES.map((m) => {
+      const w = warm[m[0]]; const i = info[m[0]];
+      if (!w) return '<tr style="opacity:.6"><td><b>' + esc(m[1]) + '</b><div class="faint">' + esc(m[2]) + '</div></td><td colspan="4" class="faint">Not used for bulk yet. Warm-up starts the day a campaign first sends from it.</td><td></td></tr>';
+      const days = Math.max(0, Math.round((new Date(today + 'T00:00:00') - new Date(String(w.warm_start).slice(0, 10) + 'T00:00:00')) / 86400000));
+      const cap = Math.min(num(w.max_cap) || 480, RAMP[Math.min(4, Math.floor(days / 7))]);
+      return '<tr><td><b>' + esc(m[1]) + '</b><div class="faint">' + esc(m[2]) + '</div></td><td>Day ' + (days + 1) + '<div class="faint">since ' + esc(fmtDate(String(w.warm_start).slice(0, 10))) + '</div></td><td class="r num"><b>' + cap + '</b>/day<div class="faint">max ' + esc(w.max_cap || 480) + '</div></td><td class="r num">' + (i ? esc(i.sent_today) + ' sent · ' + esc(i.left_today) + ' left' : '—') + '</td><td>' + (w.paused === true ? '<span style="color:#cf222e"><b>Paused</b></span><div class="faint">' + esc(w.pause_reason || '') + '</div>' : '<span style="color:#1a7f37">Sending</span>') + (i && i.sent_7d ? '<div class="faint">' + esc(i.bounces_7d) + ' bounces of ' + esc(i.sent_7d) + ' in 7 days</div>' : '') + '</td>' +
+        '<td><div class="actions" style="justify-content:flex-end">' + (w.paused === true ? '<button class="btn sm primary" type="button" data-bk="mbresume" data-id="' + m[0] + '">Resume</button>' : '<button class="btn sm" type="button" data-bk="mbpause" data-id="' + m[0] + '">Pause</button>') + '<select class="bk-cap" data-id="' + m[0] + '" aria-label="Daily maximum for ' + esc(m[1]) + '">' + [50, 100, 200, 300, 400, 480].map((n) => '<option value="' + n + '"' + (num(w.max_cap || 480) === n ? ' selected' : '') + '>max ' + n + '/day</option>').join('') + '</select></div></td></tr>';
+    }).join('');
+    let h = '<div class="panel table-wrap" style="padding:0;margin-bottom:12px"><table><thead><tr><th>Mailbox</th><th>Warm-up</th><th class="r">Today\'s limit</th><th class="r">Today</th><th>Status</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    h += '<p class="hint-line">Warm-up per mailbox: 50 a day in week 1, 100 in week 2, 200 in week 3, 350 in week 4, then up to 480. Emails are spread across the sending hours (at most 12 per mailbox every 10 minutes). A mailbox pauses itself if more than 3% of its emails bounce in 7 days; a campaign pauses itself above 5%.</p>';
+    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Next run</h2><button class="btn sm" type="button" data-bk="plan">Check what sends next</button></div>';
+    if (!P) h += '<p class="muted" style="margin:0">Shows what the next 10-minute run would send, without sending anything.</p>';
+    else {
+      h += '<p class="muted" style="margin:0">As of ' + esc(P.now_ist) + ' IST: ' + esc(P.running) + ' campaign' + (P.running === 1 ? '' : 's') + ' sending, <b>' + esc(P.planned_this_run) + '</b> emails in the next run.</p>';
+      h += (P.campaigns || []).map((c) => '<div class="info" style="border-top:1px solid var(--line);padding-top:8px"><div><b>' + esc(c.name) + '</b> ' + (c.in_window ? '' : '<span class="faint">(outside sending hours)</span>') + (c.finished ? ' <span class="faint">(finished)</span>' : '') + (c.auto_paused ? ' <span style="color:#cf222e">(paused for bounces)</span>' : '') + '</div><div class="faint">' + esc(c.due_new) + ' new and ' + esc(c.due_followups) + ' follow-ups due · ' + esc(c.waiting) + ' waiting · ' + esc(c.planned) + ' in this run' + (Object.keys(c.skipped || {}).length ? ' · skipped: ' + esc(Object.entries(c.skipped).map(([k, v]) => v + ' ' + k).join(', ')) : '') + '</div></div>').join('');
+      if ((P.sample || []).length) h += '<details style="margin-top:8px"><summary>Preview the first ' + P.sample.length + '</summary>' + P.sample.map((x) => '<div class="panel" style="margin-top:8px;white-space:pre-wrap;font-size:13px"><b>To:</b> ' + esc(x.to) + ' · <b>From:</b> ' + esc(x.from) + (x.step ? ' · follow-up ' + esc(x.step) : '') + '\n<b>Subject:</b> ' + esc(x.subject) + '\n\n' + esc(x.body) + '</div>').join('') + '</details>';
+    }
+    return h + '</div>';
+  }
+
+  function bkBlank() { return { campaign_id: '', name: '', bucket_id: (BK.buckets[0] || {}).bucket_id || '', mailboxes: '', subject: '', body: '', followups: [{ days: 3, body: '' }, { days: 7, body: '' }], send_from: '09:30', send_to: '18:30', days_from: '1', days_to: '6', start_date: '', track_opens: true, track_clicks: false, signature_id: '', sender_name: '' }; }
+  function bkEditFrom(c) {
+    let F = []; try { F = JSON.parse(c.followups || '[]'); } catch (e) { F = []; }
+    const m = String(c.send_window || '09:30-18:30|1-6').match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})(?:\s*\|\s*([1-7])\s*-\s*([1-7]))?/) || [];
+    return { campaign_id: c.campaign_id, name: c.name || '', bucket_id: c.bucket_id || '', mailboxes: c.mailboxes || '', subject: c.subject || '', body: c.body || '', followups: F, send_from: m[1] || '09:30', send_to: m[2] || '18:30', days_from: m[3] || '1', days_to: m[4] || '6', start_date: c.start_date || '', track_opens: c.track_opens !== false, track_clicks: c.track_clicks === true, signature_id: c.signature_id || '', sender_name: c.sender_name || '', status: c.status };
+  }
+  const DAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']];
+  function bkEditor() {
+    const e = BK.edit; const b = bkBucket(e.bucket_id);
+    const sel = String(e.mailboxes || '').split(',').filter(Boolean);
+    const bSel = String(b.mailboxes || '').split(',').filter(Boolean);
+    const chip = (f) => '<button type="button" class="chip" data-bk="ins" data-id="' + esc(f) + '">' + esc(f) + '</button>';
+    const fu = (e.followups || []).map((f, i) => '<div class="panel" style="display:flex;flex-direction:column;gap:6px"><div class="actions" style="justify-content:space-between"><b>Follow-up ' + (i + 1) + '</b><span><label>wait <input type="number" min="1" max="60" class="bk-fu-days" data-i="' + i + '" value="' + esc(f.days) + '" style="width:64px"> days after the previous email</label> <button type="button" class="btn sm ghost bad" data-bk="fudel" data-id="' + i + '">Remove</button></span></div><textarea class="bk-fu-body" data-i="' + i + '" style="min-height:90px" placeholder="Short and friendly. Sent in the same email thread, only if they have not replied.">' + esc(f.body) + '</textarea></div>').join('');
+    let h = '<form class="section" id="bk-edit-form" style="display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;align-items:start">';
+    h += '<div class="panel" style="display:flex;flex-direction:column;gap:12px"><div class="panel-head" style="margin:0"><h2>' + (e.campaign_id ? 'Edit campaign' : 'New campaign') + (e.status ? ' ' + bkPill(e.status) : '') + '</h2><button type="button" class="btn ghost" data-bk="closeedit">Close</button></div><div class="form-grid">' +
+      '<label class="field span" for="be-name">Campaign name<input id="be-name" class="bk-in" data-k="name" value="' + esc(e.name) + '" placeholder="e.g. October B2B deals – Odisha agents"></label>' +
+      '<label class="field span" for="be-bucket">Send to bucket<select id="be-bucket" class="bk-in" data-k="bucket_id">' + BK.buckets.map((x) => '<option value="' + esc(x.bucket_id) + '"' + (x.bucket_id === e.bucket_id ? ' selected' : '') + '>' + esc(x.name) + ' (' + esc((x.stats || {}).sendable || 0) + ' ready)</option>').join('') + '</select></label>' +
+      '<div class="field span">Send from <span class="faint">(empty = the bucket\'s mailboxes: ' + esc(bSel.map(mbLabel).join(', ') || 'none set') + ')</span><div class="chips" style="margin-top:6px">' + MAILBOXES.map((m) => '<label class="chip"><input type="checkbox" class="be-mb" value="' + m[0] + '"' + (sel.includes(m[0]) ? ' checked' : '') + ' style="margin-right:6px">' + esc(m[1]) + '</label>').join('') + '</div></div>' +
+      '<label class="field span" for="be-subject">Subject<input id="be-subject" class="bk-in" data-k="subject" value="' + esc(e.subject) + '" placeholder="e.g. Puri & Konark packages for {organisation|your agency}"></label>' +
+      '<div class="field span">Insert a field <span class="faint">(click where you want it, then a field; use {field|fallback} when a value may be empty)</span><div class="chips" style="margin-top:6px">' + ['{first_name|there}', '{organisation}', '{city}', '{full_name}', '{email}'].map(chip).join('') + '</div></div>' +
+      '<label class="field span" for="be-body">First email<textarea id="be-body" class="bk-in" data-k="body" style="min-height:200px" placeholder="Hi {first_name|there},&#10;&#10;…">' + esc(e.body) + '</textarea></label></div>' +
+      fu + ((e.followups || []).length < 5 ? '<div class="actions"><button type="button" class="btn sm" data-bk="fuadd">Add a follow-up</button></div>' : '') +
+      '<div class="form-grid">' +
+      '<label class="field" for="be-from">Send between<input id="be-from" type="time" class="bk-in" data-k="send_from" value="' + esc(e.send_from) + '"></label>' +
+      '<label class="field" for="be-to">and (IST)<input id="be-to" type="time" class="bk-in" data-k="send_to" value="' + esc(e.send_to) + '"></label>' +
+      '<label class="field" for="be-d1">From day<select id="be-d1" class="bk-in" data-k="days_from">' + DAYS.map((d) => '<option value="' + d[0] + '"' + (d[0] === String(e.days_from) ? ' selected' : '') + '>' + d[1] + '</option>').join('') + '</select></label>' +
+      '<label class="field" for="be-d2">to day<select id="be-d2" class="bk-in" data-k="days_to">' + DAYS.map((d) => '<option value="' + d[0] + '"' + (d[0] === String(e.days_to) ? ' selected' : '') + '>' + d[1] + '</option>').join('') + '</select></label>' +
+      '<label class="field" for="be-start">Start date (optional)<input id="be-start" type="date" class="bk-in" data-k="start_date" value="' + esc(e.start_date) + '"></label>' +
+      '<label class="field" for="be-sig">Signature<select id="be-sig" class="bk-in" data-k="signature_id">' + sigOptionsHtml('', e.signature_id) + '</select></label>' +
+      '<label class="field" for="be-sender">Sender name (optional)<input id="be-sender" class="bk-in" data-k="sender_name" value="' + esc(e.sender_name) + '" placeholder="Kamakshya Prasad Nayak"></label>' +
+      '<div class="field">Tracking<label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="be-opens" style="width:auto"' + (e.track_opens ? ' checked' : '') + '> Track opens</label><label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="be-clicks" style="width:auto"' + (e.track_clicks ? ' checked' : '') + '> Track link clicks</label></div></div>' +
+      '<div class="actions"><button class="btn primary" type="submit">Save campaign</button>' + (e.campaign_id && e.status !== 'running' ? '<button class="btn" type="button" data-bk="start" data-id="' + esc(e.campaign_id) + '">Save and start</button>' : '') + '</div>' +
+      '<p class="hint-line">Every email gets an unsubscribe link and the one-click unsubscribe header Gmail and Yahoo require. Emails go out one by one as plain, personal-looking messages from each mailbox with its signature.</p></div>';
+    h += '<div class="panel" style="display:flex;flex-direction:column;gap:10px;position:sticky;top:12px"><div class="panel-head" style="margin:0"><h2>Preview</h2><span class="actions"><button type="button" class="btn sm ghost" data-bk="sprev">‹</button><button type="button" class="btn sm ghost" data-bk="snext">›</button></span></div><div id="bk-preview"></div>' +
+      '<div class="field">Send a test to yourself<div class="actions" style="margin-top:6px"><select id="be-test-to">' + ALL_ADDR.map((a) => '<option' + (a === 'kn0733@gmail.com' ? ' selected' : '') + '>' + esc(a) + '</option>').join('') + '</select><select id="be-test-step"><option value="0">First email</option>' + (e.followups || []).map((f, i) => '<option value="' + (i + 1) + '">Follow-up ' + (i + 1) + '</option>').join('') + '</select><button type="button" class="btn" data-bk="test">Send test</button></div></div></div>';
+    return h + '</form>';
+  }
+  function bkCollect() {
+    const e = BK.edit; if (!e) return;
+    document.querySelectorAll('.bk-in').forEach((el) => { e[el.getAttribute('data-k')] = el.value; });
+    const mbs = [...document.querySelectorAll('.be-mb')].filter((x) => x.checked).map((x) => x.value); e.mailboxes = mbs.join(',');
+    document.querySelectorAll('.bk-fu-days').forEach((el) => { const i = +el.getAttribute('data-i'); if (e.followups[i]) e.followups[i].days = el.value; });
+    document.querySelectorAll('.bk-fu-body').forEach((el) => { const i = +el.getAttribute('data-i'); if (e.followups[i]) e.followups[i].body = el.value; });
+    const o = $('#be-opens'); if (o) e.track_opens = o.checked; const c = $('#be-clicks'); if (c) e.track_clicks = c.checked;
+  }
+  function bkPayload() {
+    const e = BK.edit;
+    return { campaign_id: e.campaign_id || '', name: e.name, bucket_id: e.bucket_id, mailboxes: e.mailboxes, subject: e.subject, body: e.body,
+      followups: (e.followups || []).filter((f) => String(f.body || '').trim()).map((f) => ({ days: Number(f.days) || 3, body: f.body })),
+      send_window: (e.send_from || '09:30') + '-' + (e.send_to || '18:30') + '|' + (e.days_from || '1') + '-' + (e.days_to || '6'), start_date: e.start_date || '',
+      track_opens: !!e.track_opens, track_clicks: !!e.track_clicks, signature_id: e.signature_id || '', sender_name: e.sender_name || '' };
+  }
+  function bkPreview() {
+    const box = $('#bk-preview'); const e = BK.edit; if (!box || !e) return;
+    const row = BK.sample[BK.sampleIdx] || { email: 'sample@example.com', first_name: '', full_name: '', organisation: '', city: '', extra: '{}' };
+    const f = fieldsOf(row); const s = mergeT(e.subject, f); const b = mergeT(e.body, f);
+    const miss = [...new Set(s.miss.concat(b.miss))];
+    let missCount = 0; const allTpl = [e.subject, e.body].concat((e.followups || []).map((x) => x.body)).join('\n');
+    BK.sample.forEach((r) => { if (mergeT(allTpl, fieldsOf(r)).miss.length) missCount++; });
+    const ph = hasPlaceholder(allTpl);
+    box.innerHTML = '<div class="faint">' + (BK.sample.length ? 'Contact ' + (BK.sampleIdx + 1) + ' of ' + BK.sample.length + ' ready to send: ' + esc(row.email) : 'No ready-to-send contacts in this bucket yet; showing empty fields.') + '</div>' +
+      '<div style="border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--surface)"><div><b>' + esc(s.text || '(no subject)') + '</b></div><div class="faint" style="margin-bottom:8px">from ' + esc(String(e.mailboxes || bkBucket(e.bucket_id).mailboxes || '').split(',').filter(Boolean).map(mbLabel)[0] || '—') + '</div><div style="white-space:pre-wrap;font-size:14px">' + esc(b.text || '') + '</div><div class="faint" style="margin-top:10px;font-size:12px">— signature —<br>Not interested? Unsubscribe or just reply with the word unsubscribe.</div></div>' +
+      (miss.length ? '<div class="opp">This contact has no ' + esc(miss.join(', ')) + '. Contacts with a missing field are skipped, not sent a blank. Add a fallback like {' + esc(miss[0]) + '|there}.</div>' : '') +
+      (missCount ? '<div class="faint">' + missCount + ' of the ' + BK.sample.length + ' loaded contacts would be skipped for a missing field.</div>' : '') +
+      (ph ? '<div class="opp" style="border-color:#cf222e">Remove the [placeholder] text; the campaign cannot be saved with it.</div>' : '');
+  }
+
+  async function bkSave(thenStart, btn) {
+    bkCollect(); const p = bkPayload();
+    if (btn) btn.disabled = true;
+    try {
+      const j = await bkPost(BULK_CAMP_API, 'save', p); BK.edit.campaign_id = j.campaign_id;
+      if (thenStart) { await bkStart(j.campaign_id, true); } else toast(j.message || 'Saved.');
+      BK.edit = null; await loadBulk(true);
+    } catch (er) { toast(er.message, true); } finally { if (btn) btn.disabled = false; }
+  }
+  async function bkStart(id, fresh) {
+    if (fresh) await loadBulk(true);
+    const c = bkCamp(id); if (!c) return;
+    const b = bkBucket(c.bucket_id); const mbs = String(c.mailboxes || b.mailboxes || '').split(',').filter(Boolean);
+    if (!confirm('Start sending "' + c.name + '"?\n\nTo: ' + (c.sendable || 0) + ' ready contacts in ' + (b.name || c.bucket_id) + '\nFrom: ' + mbs.map(mbLabel).join(', ') + '\nHours: ' + (c.send_window || '09:30-18:30|1-6') + ' IST\n\nEmails go out gradually within each mailbox\'s warm-up limit. You can pause at any time.')) return;
+    try { const j = await bkPost(BULK_CAMP_API, 'status', { campaign_id: id, status: 'running' }); toast(j.message || 'Started.'); await loadBulk(true); } catch (er) { toast(er.message, true); }
+  }
+
+  function bindBulk() {
+    if (S.view !== 'bulk') return;
+    if (BK.edit) {
+      bkPreview();
+      if (BK.sampleBucket !== BK.edit.bucket_id) loadSample(BK.edit.bucket_id);
+      const f = $('#bk-edit-form');
+      f.addEventListener('input', () => { bkCollect(); bkPreview(); });
+      f.addEventListener('change', (ev) => { const bucketChanged = ev.target.id === 'be-bucket'; bkCollect(); if (bucketChanged) { BK.sample = []; BK.sampleBucket = ''; render(); } else bkPreview(); });
+      f.addEventListener('submit', (ev) => { ev.preventDefault(); bkSave(false, f.querySelector('button[type=submit]')); });
+      f.addEventListener('focusin', (ev) => { if (ev.target.matches('#be-subject,#be-body,.bk-fu-body')) BK.lastField = ev.target; });
+    }
+    const bf = $('#bk-bucket-form');
+    if (bf) bf.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const p = Object.assign({}, BK.bucketEdit, { name: $('#bb-name').value.trim(), category: $('#bb-cat').value.trim(), purpose: $('#bb-purpose').value.trim(), notes: $('#bb-notes').value.trim(), active: $('#bb-active').checked, mailboxes: [...document.querySelectorAll('.bb-mb')].filter((x) => x.checked).map((x) => x.value).join(',') });
+      delete p.stats;
+      const btn = bf.querySelector('button[type=submit]'); btn.disabled = true;
+      try { const j = await bkPost(BULK_LISTS_API, 'bucket_save', p); toast(j.message || 'Bucket saved.'); BK.bucketEdit = null; await loadBulk(true); } catch (er) { toast(er.message, true); btn.disabled = false; }
+    });
+    const ff = $('#bk-from-form');
+    if (ff) ff.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const btn = ff.querySelector('button[type=submit]'); btn.disabled = true;
+      try { const j = await bkPost(BULK_LISTS_API, 'from_contacts', { bucket_id: BK.fromFor, filter: { campaign_code: $('#bf-camp').value, city: $('#bf-city').value.trim(), stage: $('#bf-stage').value, text: $('#bf-text').value.trim() } }); toast(j.message || 'Added.'); BK.fromFor = ''; await loadBulk(true); } catch (er) { toast(er.message, true); btn.disabled = false; }
+    });
+    const fileIn = $('#bk-file');
+    if (fileIn) fileIn.addEventListener('change', () => { const fl = fileIn.files && fileIn.files[0]; if (!fl) return; const rd = new FileReader(); rd.onload = () => { const r = parseCsv(rd.result); BK.imp = { headers: r.headers, rows: r.rows, source: ($('#bk-src').value || fl.name).trim() }; render(); }; rd.readAsText(fl); });
+    const rq = $('#bk-rq');
+    if (rq) rq.addEventListener('change', () => { BK.rows.q = rq.value.trim(); BK.rows.offset = 0; loadBkRows(); });
+    document.querySelectorAll('.bk-cap').forEach((s) => s.addEventListener('change', async () => { try { const j = await bkPost(BULK_CAMP_API, 'warmup_save', { mailbox: s.getAttribute('data-id'), max_cap: Number(s.value) }); toast(j.message); await loadBulk(true); } catch (er) { toast(er.message, true); } }));
+  }
+
+  document.addEventListener('click', async (ev) => {
+    const t = ev.target.closest('[data-bk]'); if (!t) return;
+    const a = t.getAttribute('data-bk'); const id = t.getAttribute('data-id') || '';
+    if (a === 'tab') { BK.tab = id; store.set('bktab', id); BK.detail = ''; BK.edit = null; render(); if (id === 'mailboxes' && !BK.plan) loadPlan(); return; }
+    if (a === 'newcamp') { if (S.mode !== 'live') { toast('Connect your key first.', true); return; } BK.edit = bkBlank(); BK.tab = 'campaigns'; render(); window.scrollTo(0, 0); return; }
+    if (a === 'edit') { const c = bkCamp(id); if (!c) return; BK.edit = bkEditFrom(c); BK.detail = ''; render(); window.scrollTo(0, 0); return; }
+    if (a === 'closeedit') { BK.edit = null; render(); return; }
+    if (a === 'detail') { BK.detail = id; BK.sends = { filter: 'all', list: [], total: -1 }; render(); window.scrollTo(0, 0); loadSends(); return; }
+    if (a === 'back') { BK.detail = ''; render(); return; }
+    if (a === 'sendsf') { BK.sends.filter = id; BK.sends.list = []; BK.sends.total = -1; render(); loadSends(); return; }
+    if (a === 'start') { if (BK.edit && BK.edit.campaign_id === id) { await bkSave(true, t); return; } await bkStart(id); return; }
+    if (a === 'pause') { if (!confirm('Pause this campaign? Nothing more is sent until you resume.')) return; t.disabled = true; try { const j = await bkPost(BULK_CAMP_API, 'status', { campaign_id: id, status: 'paused' }); toast(j.message); await loadBulk(true); } catch (er) { toast(er.message, true); t.disabled = false; } return; }
+    if (a === 'ins') { const el = BK.lastField || $('#be-body'); if (!el) return; const s = el.selectionStart || el.value.length; el.value = el.value.slice(0, s) + id + el.value.slice(el.selectionEnd || s); el.focus(); el.setSelectionRange(s + id.length, s + id.length); bkCollect(); bkPreview(); return; }
+    if (a === 'fuadd') { bkCollect(); BK.edit.followups.push({ days: 4, body: '' }); render(); return; }
+    if (a === 'fudel') { bkCollect(); BK.edit.followups.splice(Number(id), 1); render(); return; }
+    if (a === 'sprev' || a === 'snext') { if (!BK.sample.length) return; BK.sampleIdx = (BK.sampleIdx + (a === 'snext' ? 1 : -1) + BK.sample.length) % BK.sample.length; bkPreview(); return; }
+    if (a === 'test') {
+      bkCollect(); const to = $('#be-test-to').value; const step = Number($('#be-test-step').value) || 0;
+      const p = bkPayload();
+      if (!confirm('Send a TEST of ' + (step ? 'follow-up ' + step : 'the first email') + ' to ' + to + '?\nIt uses a sample contact\'s details and is not counted in the campaign.')) return;
+      t.disabled = true;
+      try { const j = await bkPost(BULK_TEST_API, 'test', { to: to, step: step, row_key: (BK.sample[BK.sampleIdx] || {}).row_key || '', campaign: Object.assign({}, p, { mailboxes: p.mailboxes || bkBucket(p.bucket_id).mailboxes || '', followups: JSON.stringify(p.followups) }) }); toast(j.message || 'Test sent.'); } catch (er) { toast(er.message, true); } finally { t.disabled = false; }
+      return;
+    }
+    if (a === 'newbucket') { BK.bucketEdit = { name: '', category: '', purpose: '', mailboxes: '', notes: '', active: true }; render(); return; }
+    if (a === 'editbucket') { BK.bucketEdit = Object.assign({}, bkBucket(id)); render(); window.scrollTo(0, 0); return; }
+    if (a === 'closebucket') { BK.bucketEdit = null; render(); return; }
+    if (a === 'import') { BK.importFor = id; BK.imp = null; BK.fromFor = ''; render(); const p = $('#bk-import'); if (p) p.scrollIntoView({ block: 'start' }); return; }
+    if (a === 'closeimport') { BK.importFor = ''; BK.imp = null; render(); return; }
+    if (a === 'fromcontacts') { BK.fromFor = id; BK.importFor = ''; render(); const p = $('#bk-from-form'); if (p) p.scrollIntoView({ block: 'start' }); return; }
+    if (a === 'closefrom') { BK.fromFor = ''; render(); return; }
+    if (a === 'parse') { const txt = $('#bk-paste').value; if (!txt.trim()) { toast('Paste rows or choose a file first.', true); return; } const r = parseCsv(txt); BK.imp = { headers: r.headers, rows: r.rows, source: ($('#bk-src').value || 'pasted rows').trim() }; render(); return; }
+    if (a === 'doimport') {
+      const imp = BK.imp; if (!imp || !imp.rows.length) return;
+      imp.source = ($('#bk-src') && $('#bk-src').value.trim()) || imp.source || 'import';
+      imp.busy = true; imp.result = ''; const tot = { added: 0, duplicates: 0, invalid: 0, suppressed: 0, pending: 0 };
+      try {
+        for (let i = 0; i < imp.rows.length; i += 1000) {
+          imp.progress = Math.min(i + 1000, imp.rows.length) + ' of ' + imp.rows.length; render();
+          const j = await bkPost(BULK_LISTS_API, 'import', { bucket_id: BK.importFor, source: imp.source, rows: imp.rows.slice(i, i + 1000) });
+          Object.keys(tot).forEach((k) => { tot[k] += Number(j[k] || 0); });
+        }
+        imp.result = 'Added ' + tot.added + (tot.duplicates ? ', skipped ' + tot.duplicates + ' already in the bucket' : '') + (tot.invalid ? ', ' + tot.invalid + ' invalid' : '') + (tot.suppressed ? ', ' + tot.suppressed + ' on the do-not-email list' : '') + '.' + (tot.pending ? ' ' + tot.pending + ' company addresses are being checked now.' : '');
+        toast(imp.result);
+        if (tot.pending) bkPost(BULK_LISTS_API, 'verify').catch(() => {});
+      } catch (er) { toast(er.message, true); imp.result = 'Stopped: ' + er.message; }
+      imp.busy = false; await loadBulk(true); return;
+    }
+    if (a === 'verify') { t.disabled = true; try { await bkPost(BULK_LISTS_API, 'verify'); toast('Checking now. Refresh in a minute to see the results.'); setTimeout(() => loadBulk(true), 60000); } catch (er) { toast(er.message, true); } setTimeout(() => { t.disabled = false; }, 5000); return; }
+    if (a === 'rows') { BK.rows = { bucket: id, filter: 'all', q: '', offset: 0, total: 0, list: [] }; render(); loadBkRows(); setTimeout(() => { const p = $('#bk-rows'); if (p) p.scrollIntoView({ block: 'start' }); }, 50); return; }
+    if (a === 'closerows') { BK.rows.bucket = ''; render(); return; }
+    if (a === 'rowsf') { BK.rows.filter = id; BK.rows.offset = 0; loadBkRows(); return; }
+    if (a === 'rowspage') { BK.rows.offset = Math.max(0, BK.rows.offset + Number(id) * 50); loadBkRows(); return; }
+    if (a === 'rowremove' || a === 'rowrestore') { t.disabled = true; try { const j = await bkPost(BULK_CAMP_API, 'row_status', { row_key: id, status: a === 'rowremove' ? 'removed' : 'active' }); toast(j.message); loadBkRows(); } catch (er) { toast(er.message, true); t.disabled = false; } return; }
+    if (a === 'mbpause' || a === 'mbresume') { t.disabled = true; try { const j = await bkPost(BULK_CAMP_API, 'warmup_save', { mailbox: id, paused: a === 'mbpause' }); toast(j.message); await loadBulk(true); loadPlan(); } catch (er) { toast(er.message, true); t.disabled = false; } return; }
+    if (a === 'plan') { loadPlan(t); return; }
+  });
+
   // ---------- LIBRARY ----------
   function renderLibrary() {
     const items = (S.data.content || []).slice().sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
@@ -1112,10 +1514,11 @@
     renderChrome();
     const v = $('#view');
     if (!S.data) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
-    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings };
+    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, bulk: renderBulk, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings };
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
     bindViewInputs();
+    if (S.view === 'bulk') { bindBulk(); if (S.mode === 'live' && !BK.loaded && !BK.loading) loadBulk(); }
   }
 
   function bindViewInputs() {
@@ -1332,7 +1735,7 @@
     if (t.hasAttribute('data-copy')) { copyText(t.getAttribute('data-copy'), t); return; }
     if (t.hasAttribute('data-open')) { S.drawer = t.getAttribute('data-open'); renderDrawer(); return; }
     if (t.hasAttribute('data-close')) { S.drawer = null; renderDrawer(); return; }
-    if (t.hasAttribute('data-refresh')) { load(); return; }
+    if (t.hasAttribute('data-refresh')) { load(); if (S.view === 'bulk') loadBulk(true); return; }
     if (t.hasAttribute('data-sort')) {
       const col = t.getAttribute('data-sort');
       S.sort = S.sort.col === col ? { col, dir: -S.sort.dir } : { col, dir: col === 'full_name' || col === 'next_followup_date' ? 1 : -1 };
@@ -1354,5 +1757,5 @@
   const initial = (location.hash || '').replace('#', '');
   if (VIEWS.some((v) => v.id === initial)) S.view = initial;
   load();
-  setInterval(() => { if (S.mode === 'live' && document.visibilityState === 'visible' && !S.drawer) load(true); }, 5 * 60 * 1000);
+  setInterval(() => { if (S.mode === 'live' && document.visibilityState === 'visible' && !S.drawer && !(S.view === 'bulk' && (BK.edit || BK.imp || BK.bucketEdit))) { load(true); if (S.view === 'bulk') loadBulk(true); } }, 5 * 60 * 1000);
 })();
