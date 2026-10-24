@@ -15,6 +15,7 @@
     key: store.get('key', ''),
     sid: store.get('sid', ''),
     me: null,
+    ifilter: store.get('ifilter', 'needs'), inboxTotal: 0, review: null, cap: parseInt(store.get('cap', '30'), 10) || 0,
     ctab: 'list', cptab: 'campaigns', stab: 'account', addm: store.get('addm', ''), dtab: 'over', landed: false,
     data: null,
     inbox: [],
@@ -242,7 +243,7 @@
   }
   async function loadInbox() {
     if (S.mode !== 'live') return;
-    try { const j = await inboxApi('list'); S.inbox = j.inbox || []; if (['today', 'inbox'].includes(S.view)) render(); else renderChrome(); } catch (e) { S.inbox = S.inbox || []; }
+    try { const j = await inboxApi('list'); S.inbox = j.inbox || []; S.inboxTotal = j.total || S.inbox.length; if (['today', 'inbox'].includes(S.view)) render(); else renderChrome(); } catch (e) { S.inbox = S.inbox || []; }
   }
   async function loadThread(key) {
     if (S.mode !== 'live' || !key) return;
@@ -417,7 +418,7 @@
   }
   function renderChrome() {
     const todayCount = S.data ? queueList().queue.length + checksList().length + draftsList().length : 0;
-    const inboxCount = (S.inbox || []).length;
+    const inboxCount = inboxNeeding().length;
     const badge = (id) => { const n = id === 'today' ? todayCount : (id === 'inbox' ? inboxCount : 0); return n ? '<span class="count num">' + n + '</span>' : ''; };
     let lastG = ''; let navHtml = '';
     navViews().forEach((v) => {
@@ -454,19 +455,30 @@
   // ---------- TODAY ----------
   function renderToday() {
     const { queue, backlog } = queueList();
-    const checks = checksList(); const drafts = draftsList(); const due = dueNoDraft();
+    let checks = checksList(); let drafts = draftsList(); const due = dueNoDraft();
+    // daily limit: replies first, then follow-ups, then acceptance checks, then new connections (best score first)
+    let held = 0; let queueShown = queue;
+    if (S.cap > 0) {
+      let room = S.cap;
+      const take = (arr) => { const k = Math.max(0, Math.min(arr.length, room)); room -= k; held += arr.length - k; return arr.slice(0, k); };
+      const replyDrafts = drafts.filter((c) => /^They replied/.test(c.last_contact_summary || '')); const fuDrafts = drafts.filter((c) => !/^They replied/.test(c.last_contact_summary || ''));
+      const d1 = take(replyDrafts); const d2 = take(fuDrafts); drafts = d1.concat(d2);
+      checks = take(checks); queueShown = take(queue);
+    }
     const dateStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
-    let h = topbar('Today', dateStr + ' · ' + queue.length + ' to connect · ' + checks.length + ' to check · ' + drafts.length + ' follow-ups ready');
+    let h = topbar('Today', dateStr + ' · ' + queueShown.length + ' to connect · ' + checks.length + ' to check · ' + drafts.length + ' follow-ups ready',
+      drafts.length ? '<button type="button" class="btn primary" data-review="drafts">Review follow-ups one by one</button>' : '');
     if (!S.data.contacts.length) return h + onboardCard();
-    h += todayTiles(queue.length, checks.length, drafts.length);
-    h += fold('connect', 'Connect on LinkedIn', queue.length, 'Open the profile, send the request yourself, then log which note you used.' + (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : ''),
-      queue.length ? '<div class="cards">' + queue.map(queueCard).join('') + '</div>' : '<div class="empty">Nobody is waiting to be contacted. Add people from Add people.</div>');
-
+    h += todayTiles(queueShown.length, checks.length, drafts.length);
+    if (held > 0) h += '<div class="panel cap-note"><span><b>' + held + ' more</b> wait behind your daily limit of ' + S.cap + '. Finish these first; the rest move up tomorrow.</span><button type="button" class="btn sm ghost" data-capoff="1">Show everything today</button><button type="button" class="btn sm ghost" data-nav="settings">Change the limit</button></div>';
+    h += fold('drafts', 'Follow-ups ready', drafts.length, 'Drafted each morning at 9:00. Edit before sending; nothing goes out automatically.',
+      drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>');
     h += fold('check', 'Did they accept?', checks.length, 'Requests and follows that are due for a check.',
       checks.length ? '<div class="panel table-wrap"><table><tbody>' + checks.map(checkRow).join('') + '</tbody></table></div>' : '<div class="empty">No pending requests need a check today.</div>');
 
-    h += fold('drafts', 'Follow-ups ready', drafts.length, 'Drafted each morning at 9:00. Edit before sending; nothing goes out automatically.',
-      drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>');
+    h += fold('connect', 'Connect on LinkedIn', queueShown.length, 'Open the profile, send the request yourself, then log which note you used.' + (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : ''),
+      queueShown.length ? '<div class="cards">' + queueShown.map(queueCard).join('') + '</div>' : '<div class="empty">' + (queue.length ? 'New connections are held back by your daily limit today.' : 'Nobody is waiting to be contacted. Add people from Add people.') + '</div>');
+
     return h;
   }
 
@@ -479,8 +491,8 @@
   function tile(n, label, go, tone) { return '<button type="button" class="tile' + (n ? ' ' + (tone || '') : ' zero') + '" data-go="' + go + '"><span class="tile-n num">' + n + '</span><span class="tile-l">' + esc(label) + '</span></button>'; }
   function todayTiles(nq, nc, nd) {
     const rc = S.reconnect && S.reconnect.loaded ? S.reconnect.total || 0 : 0;
-    const disc = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c)).length + S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).length;
-    return '<div class="tiles">' + tile((S.inbox || []).length, 'replies waiting', 'inbox', 'hot') + tile(nq, 'to connect', '#sec-connect') + tile(nc, 'to check', '#sec-check') + tile(nd, 'follow-ups ready', '#sec-drafts', 'hot') +
+    const disc = S.data.contacts.filter((c) => isWaitingDisc(c) && !fromMailbox(c)).length;
+    return '<div class="tiles">' + tile(inboxNeeding().length, 'replies to answer', 'inbox', 'hot') + tile(nq, 'to connect', '#sec-connect') + tile(nc, 'to check', '#sec-check') + tile(nd, 'follow-ups ready', '#sec-drafts', 'hot') +
       tile(rc, 'to reconnect', 'contacts:reconnect') + tile(disc, 'newly discovered', 'contacts:discovered') + '</div>';
   }
   function subTabs(key, list) {
@@ -489,28 +501,54 @@
   function withTabs(tabsHtml, fn) { S._tabs = tabsHtml; try { return fn(); } finally { S._tabs = ''; } }
 
   // ---------- INBOX (replies from every mailbox you work from) ----------
+  const ITAG = { hot: ['Enquiries', 'tag-hot'], ops: ['Bookings & suppliers', 'tag-ops'], question: ['Questions', 'tag-q'], other: ['Other', ''], later: ['Later', 'tag-later'], no: ['Not interested', 'tag-no'], promo: ['Promotions', 'tag-low'], ooo: ['Out of office', 'tag-low'] };
+  const ITAG_ORDER = ['hot', 'ops', 'question', 'other', 'later', 'no', 'promo', 'ooo'];
+  const LOW_TAGS = ['promo', 'ooo', 'no'];
+  const tagOfMsg = (m) => (ITAG[m.tag] ? m.tag : 'other');
+  const inboxNeeding = () => (S.inbox || []).filter((m) => !LOW_TAGS.includes(tagOfMsg(m)));
+  const inboxFiltered = () => { const f = S.ifilter || 'all'; const all = S.inbox || []; if (f === 'all') return all; if (f === 'needs') return all.filter((m) => !LOW_TAGS.includes(tagOfMsg(m))); return all.filter((m) => tagOfMsg(m) === f); };
   function inboxSection() {
-    let h = '';
     const inbox = (S.inbox || []);
-    if (inbox.length) {
-      h += '<section class="section"><div class="section-head"><h2>Inbox · ' + inbox.length + ' new ' + (inbox.length === 1 ? 'reply' : 'replies') + '</h2><span class="hint">Replies from your contacts to any of your connected addresses, checked every 10 minutes. Your answer goes back in the same email thread, from the address they wrote to.</span></div><div class="cards">' + inbox.map(inboxCard).join('') + '</div></section>';
-    }
-
+    if (!inbox.length) return '';
+    const counts = {}; inbox.forEach((m) => { const t = tagOfMsg(m); counts[t] = (counts[t] || 0) + 1; });
+    const chip = (k, label, n) => '<button type="button" class="chip' + ((S.ifilter || 'all') === k ? ' on' : '') + '" data-ifilter="' + k + '">' + esc(label) + ' <span class="fold-n">' + n + '</span></button>';
+    let h = '<div class="chips subtabs">' + chip('all', 'All', inbox.length) + chip('needs', 'Needs an answer', inboxNeeding().length) +
+      ITAG_ORDER.filter((k) => counts[k]).map((k) => chip(k, ITAG[k][0], counts[k])).join('') + '</div>';
+    const list = inboxFiltered();
+    const f = S.ifilter || 'all';
+    if (LOW_TAGS.includes(f) && list.length) h += '<div class="panel" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span>' + list.length + ' message' + (list.length === 1 ? '' : 's') + ' in ' + esc(ITAG[f][0]) + '. Nothing will be sent; they are only marked as handled and leave the list.</span><button type="button" class="btn sm" data-inboxbulk="' + f + '">Mark all ' + list.length + ' as handled</button></div>';
+    h += list.length ? '<div class="cards">' + list.map(inboxCard).join('') + '</div>' : '<div class="empty">Nothing in this group.</div>';
+    if ((S.inboxTotal || 0) > inbox.length) h += '<p class="hint-line">Showing the ' + inbox.length + ' most important of ' + S.inboxTotal + ' new messages. Clear some to see the rest.</p>';
     return h;
   }
   function renderInbox() {
-    const n = (S.inbox || []).length;
-    let h = topbar('Inbox', n ? n + ' new ' + (n === 1 ? 'reply' : 'replies') + ' to answer' : 'Replies from your contacts arrive here, checked every 10 minutes.');
+    const n = (S.inbox || []).length; const need = inboxNeeding().length;
+    let h = topbar('Inbox', n ? need + ' need an answer · ' + (n - need) + ' promotions, out-of-office and "not interested". Sorted most important first; checked every 10 minutes.' : 'Replies from your contacts arrive here, checked every 10 minutes.',
+      n && can('reply') ? '<button type="button" class="btn primary" data-review="inbox">Answer one by one</button>' : '');
     if (S.mode !== 'live') return h + '<div class="empty">Sign in to see replies.</div>';
     const body = inboxSection();
     return h + (body || '<div class="empty">No new replies. Replies to any mailbox you work from appear here within 10 minutes. Answers go back in the same email thread.</div>');
   }
 
   // ---------- CONTACTS: list · overview · discovered · reconnect ----------
-  function discoveredSection() {
+  const fromMailbox = (c) => /^my mailbox/i.test(String(c.source || ''));
+  const isWaitingDisc = (c) => (['IDENTIFIED', 'RESEARCHED'].includes(c.status) || (c.status === 'QUALIFIED' && !c.linkedin_url)) && !isDnc(c);
+  function discoveryGateHtml() {
+    const pile = {}; let mail = 0;
+    S.data.contacts.forEach((c) => { if (!isWaitingDisc(c)) return; if (fromMailbox(c)) { mail++; return; } pile[c.campaign_code] = (pile[c.campaign_code] || 0) + 1; });
+    const rows = campaigns().filter((c) => c.auto_discovery === true || c.auto_discovery === 'true' || pile[c.campaign_code]).map((c) => {
+      const n = pile[c.campaign_code] || 0; const lim = num(c.discovery_pause_at) || 60; const paused = n >= lim;
+      return '<tr><td>' + esc(c.campaign_name || c.campaign_code) + '</td><td class="num">' + n + ' / ' + lim + '</td><td>' + (paused ? '<span class="pill s-dead">paused: work through these first</span>' : (c.auto_discovery === true || c.auto_discovery === 'true' ? '<span class="pill s-conn">finding more</span>' : '<span class="pill">discovery off</span>')) + '</td></tr>';
+    }).join('');
     let h = '';
-    const found = S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).sort((a, b) => num(b.priority_score) - num(a.priority_score)).slice(0, 12);
-    const pending = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c)).sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
+    if (mail) h += '<div class="panel section"><h2>' + mail + ' people from your mailboxes</h2><p>They are qualified and you have emailed them before, but they have no LinkedIn link, so they never reach the connect queue. Reach them by email instead: open Contacts → Reconnect for the quiet ones, or add them to a bulk email list. They are not shown below.</p></div>';
+    if (rows) h += '<div class="panel section"><h2>Discovery pauses when the pile is full</h2><p class="faint">The weekly search stops adding people to a campaign while 60 or more found people are waiting for a LinkedIn link or a decision. Running Discover for one campaign by hand still works.</p><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Waiting</th><th>Discovery</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    return h;
+  }
+  function discoveredSection() {
+    let h = discoveryGateHtml();
+    const found = S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c) && !fromMailbox(c)).sort((a, b) => num(b.priority_score) - num(a.priority_score)).slice(0, 12);
+    const pending = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c) && !fromMailbox(c)).sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
     if (pending.length) {
       h += '<section class="section"><div class="section-head"><h2>Just discovered · ' + pending.length + ' being researched</h2><span class="hint">New people from Discover now, mailboxes and imports. The engine researches and scores them (usually within 10 minutes); good matches then move to Found by discovery below.</span></div>';
       h += '<div class="panel table-wrap"><table><tbody>' + pending.slice(0, 15).map((c) => '<tr><td>' + whoBlock(c) + '<div class="faint" style="margin-top:3px">' + esc(c.source || '') + ' · ' + esc(campaignName(c.campaign_code)) + '</div></td><td><span class="pill">' + (c.status === 'IDENTIFIED' ? 'found' : 'researched') + '</span></td><td><div class="actions"><button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">Details</button>' + act(c, 'notrelevant', 'Not relevant', 'ghost bad') + '</div></td></tr>').join('') + '</tbody></table>' + (pending.length > 15 ? '<div class="faint" style="padding:8px">+ ' + (pending.length - 15) + ' more in Contacts</div>' : '') + '</div></section>';
@@ -525,7 +563,7 @@
   }
   function renderContactsPage() {
     if (!S.data.contacts.length && S.ctab === 'list') return renderContacts();
-    const disc = S.data.contacts.filter((c) => (['IDENTIFIED', 'RESEARCHED'].includes(c.status) || (c.status === 'QUALIFIED' && !c.linkedin_url)) && !isDnc(c)).length;
+    const disc = S.data.contacts.filter((c) => isWaitingDisc(c) && !fromMailbox(c)).length;
     const rc = S.reconnect && S.reconnect.loaded ? S.reconnect.total || 0 : 0;
     const tabs = subTabs('ctab', [['list', 'All contacts'], ['overview', 'Overview'], ['discovered', 'Discovered', disc], ['reconnect', 'Reconnect', rc]]);
     if (S.ctab === 'overview') return withTabs(tabs, renderPipeline);
@@ -572,11 +610,11 @@
   function inboxCard(m) {
     const id = esc(m.gmail_id); const to = m.to_address || mbAddr(m.mailbox);
     return '<article class="card"><div class="card-head"><div class="who"><span class="name" role="button" tabindex="0" data-open="' + esc(m.person_key) + '">' + esc(m.full_name || m.from_email) + '</span><span class="role">' + esc(m.from_email) + ' → ' + esc(to) + '</span></div>' +
-      '<div class="actions"><span class="pill">' + fmtDate(String(m.received_at || '').slice(0, 10)) + '</span></div></div>' +
+      '<div class="actions"><span class="pill ' + ITAG[tagOfMsg(m)][1] + '">' + esc(ITAG[tagOfMsg(m)][0]) + '</span><span class="pill">' + esc(MB_NAME[m.mailbox] || m.mailbox || '') + '</span><span class="pill">' + fmtDate(String(m.received_at || '').slice(0, 10)) + '</span></div></div>' +
       '<div><b>' + esc(m.subject || '(no subject)') + '</b></div><div class="draft" style="max-height:220px;overflow:auto">' + esc(m.body) + '</div>' +
       '<label class="field" for="ib-' + id + '">Your reply<textarea id="ib-' + id + '" placeholder="Write your answer. It goes from ' + esc(to) + ' in the same thread."></textarea></label>' +
       '<label class="field" for="ibs-' + id + '" style="max-width:420px">Signature<select id="ibs-' + id + '">' + sigOptionsHtml(to, '') + '</select></label>' +
-      '<div class="actions"><button type="button" class="btn sm primary" data-inboxreply="' + id + '">Send reply</button><button type="button" class="btn sm" data-open="' + esc(m.person_key) + '">Details</button><button type="button" class="btn sm ghost" data-inboxdone="' + id + '">Mark handled</button></div></article>';
+      '<div class="actions"><button type="button" class="btn sm primary" data-inboxreply="' + id + '">Send reply</button><button type="button" class="btn sm" data-inboxai="' + id + '">Draft with AI</button><button type="button" class="btn sm" data-open="' + esc(m.person_key) + '">Details</button><button type="button" class="btn sm ghost" data-inboxdone="' + id + '">Mark handled</button></div></article>';
   }
 
   function scoreLine(c) {
@@ -1582,6 +1620,8 @@
     let h = withTabs(subTabs('stab', tabsList), () => topbar('Settings', 'Your sign-in, email signatures, background jobs and how the app looks.'));
     if (S.stab === 'account') {
       h += S.me ? whoLine() : '';
+      h += '<div class="panel section" style="max-width:640px"><h2>My daily limit</h2><p class="faint">How many tasks Today shows you each day. Replies come first, then follow-ups, acceptance checks and new connections, best first. The rest wait for the next day. 0 means no limit. Saved on this device.</p>' +
+        '<label class="field" for="s-cap" style="max-width:200px">Tasks per day<input id="s-cap" type="number" min="0" max="500" step="5" value="' + esc(S.cap) + '"></label></div>';
       if (!S.sid) h += signInPanel();
     if (!S.me || S.me.role === 'owner') h += '<details class="section" style="max-width:640px"><summary class="faint" style="cursor:pointer">Owner access key (old way to connect, being retired)</summary>';
     if (!S.me || S.me.role === 'owner') h += '<form class="panel section" id="settings-form" style="max-width:640px"><h2>Connection</h2>' +
@@ -1874,13 +1914,130 @@
       '.methods{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.method{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:3px}' +
       '.method span{font-size:12.5px;color:var(--ink-3)}.method:hover{border-color:var(--accent)}.method.on{border:2px solid var(--accent);background:var(--accent-soft);padding:11px 13px}.method:focus-visible{outline:2px solid var(--accent)}' +
       '.drawer .dhead{position:sticky;top:calc(-18px - env(safe-area-inset-top,0px));z-index:3;background:var(--bg);display:flex;flex-direction:column;gap:12px;padding:18px 0 10px;margin:-18px 0 0;border-bottom:1px solid var(--line)}.dtabs .chip{font-size:13px}.drawer .dtab{display:flex;flex-direction:column;gap:16px}.drawer .dtab[hidden]{display:none}' +
-      '.dlg-wrap{position:fixed;inset:0;z-index:90;background:rgba(10,18,24,.45);display:grid;place-items:center;padding:16px}.dlg{background:var(--surface);border-radius:12px;box-shadow:var(--shadow);padding:18px;width:min(460px,100%);display:flex;flex-direction:column;gap:14px}' +
+      '#drawer-root .drawer,#drawer-root .scrim{z-index:50}.dlg-wrap{position:fixed;inset:0;z-index:90;background:rgba(10,18,24,.45);display:grid;place-items:center;padding:16px}.dlg{background:var(--surface);border-radius:12px;box-shadow:var(--shadow);padding:18px;width:min(460px,100%);display:flex;flex-direction:column;gap:14px}' +
       '.more-sheet{position:fixed;inset:0;z-index:35;background:rgba(10,18,24,.35)}.more-panel{position:absolute;left:8px;right:8px;bottom:calc(64px + env(safe-area-inset-bottom,0px));background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:6px;display:flex;flex-direction:column}' +
       '.more-panel button{all:unset;cursor:pointer;padding:12px 14px;border-radius:8px;font-weight:600}.more-panel button[aria-current="page"]{background:var(--accent-soft);color:var(--accent)}' +
       '@media (max-width:1100px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.methods{grid-template-columns:repeat(3,minmax(0,1fr))}}' +
       '@media (max-width:760px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.methods{grid-template-columns:repeat(2,minmax(0,1fr))}.ab-sync,.gs-k{display:none}.appbar{gap:8px}.gs{flex-basis:100%;order:-1}.mobile-nav{overflow:visible!important;grid-auto-flow:row!important;grid-template-columns:repeat(5,1fr)!important}}' +
       '</style>');
   } catch (e) { /* styles are optional */ }
+
+  // ---------- review one by one (inbox replies, follow-up drafts) ----------
+  const AI_SUG = {};
+  function reviewItems() {
+    const R = S.review; if (!R) return [];
+    if (R.kind === 'inbox') return ((S.ifilter || 'all') === 'all' ? inboxNeeding() : inboxFiltered()).filter((m) => !R.skipped.includes(m.gmail_id));
+    return draftsList().filter((c) => !R.skipped.includes(c.person_key));
+  }
+  function openReview(kind) { S.review = { kind, skipped: [], shown: '', done: 0 }; renderReview(true); }
+  function closeReview() { S.review = null; const r = $('#review-root'); if (r) r.remove(); render(); }
+  async function aiSuggest(m, ta, btn) {
+    if (!m || !ta) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Drafting…'; }
+    try {
+      const j = AI_SUG[m.gmail_id] ? { message: AI_SUG[m.gmail_id] } : await inboxApi('suggest', { gmail_id: m.gmail_id });
+      AI_SUG[m.gmail_id] = j.message;
+      if (!ta.value.trim() || ta.dataset.ai === '1') { ta.value = j.message; ta.dataset.ai = '1'; }
+      else ta.value = ta.value + '\n\n' + j.message;
+    } catch (e) { toast(e.message, true); }
+    if (btn) { btn.disabled = false; btn.textContent = 'Draft again with AI'; }
+  }
+  function renderReview(force) {
+    const R = S.review; if (!R) return;
+    let root = $('#review-root');
+    if (!root) { root = document.createElement('div'); root.id = 'review-root'; document.body.appendChild(root); }
+    const items = reviewItems();
+    const cur = items[0];
+    const id = cur ? (R.kind === 'inbox' ? cur.gmail_id : cur.person_key) : '__end__';
+    if (!force && R.shown === id) return;
+    R.shown = id;
+    const total = items.length;
+    const head = '<div class="rv-head"><div><b>' + (R.kind === 'inbox' ? 'Answer replies' : 'Review follow-ups') + '</b><span class="faint"> · ' + (cur ? total + ' left' : 'all done') + (R.done ? ' · ' + R.done + ' handled' : '') + '</span></div>' +
+      '<div class="actions"><span class="faint rv-keys">' + (R.kind === 'inbox' ? 'Ctrl+Enter send · H handled · S skip · A draft with AI · Esc close' : 'S skip · Esc close') + '</span><button type="button" class="btn sm" data-rvclose="1">Close</button></div></div>';
+    let body = '';
+    if (!cur) body = '<div class="empty">Nothing left here. ' + (R.skipped.length ? R.skipped.length + ' skipped; they are still on the list. ' : '') + 'Well done.</div><div class="actions" style="justify-content:center">' + (R.skipped.length ? '<button type="button" class="btn" data-rvagain="1">Go through skipped ones</button>' : '') + '<button type="button" class="btn primary" data-rvclose="1">Close</button></div>';
+    else if (R.kind === 'inbox') {
+      const m = cur; const to = m.to_address || mbAddr(m.mailbox); const gid = esc(m.gmail_id);
+      body = '<div class="card-head"><div class="who"><span class="name">' + esc(m.full_name || m.from_email) + '</span><span class="role">' + esc(m.from_email) + ' → ' + esc(to) + '</span></div><div class="actions"><span class="pill ' + ITAG[tagOfMsg(m)][1] + '">' + esc(ITAG[tagOfMsg(m)][0]) + '</span><span class="pill">' + fmtDate(String(m.received_at || '').slice(0, 10)) + '</span></div></div>' +
+        '<div><b>' + esc(m.subject || '(no subject)') + '</b></div><div class="draft rv-msg">' + esc(m.body) + '</div>' +
+        '<label class="field" for="rv-text">Your reply' + (can('reply') ? '' : ' (you can read only)') + '<textarea id="rv-text" rows="8" placeholder="Write your answer, or press A for an AI draft. It goes from ' + esc(to) + ' in the same thread."></textarea></label>' +
+        '<label class="field" for="rv-sig" style="max-width:420px">Signature<select id="rv-sig">' + sigOptionsHtml(to, '') + '</select></label>' +
+        '<div class="actions"><button type="button" class="btn primary" data-rvsend="' + gid + '">Send reply</button><button type="button" class="btn" data-rvai="' + gid + '">Draft with AI</button><button type="button" class="btn" data-rvdone="' + gid + '">Mark handled</button><button type="button" class="btn ghost" data-rvskip="' + gid + '">Skip</button><button type="button" class="btn ghost" data-open="' + esc(m.person_key) + '">Details</button></div>';
+    } else {
+      body = draftCard(cur) + '<div class="actions"><button type="button" class="btn ghost" data-rvskip="' + esc(cur.person_key) + '">Skip</button></div>';
+    }
+    root.innerHTML = '<div class="rv-wrap" role="dialog" aria-modal="true" aria-label="Review one by one"><div class="rv">' + head + '<div class="rv-body">' + body + '</div></div></div>';
+    const ta = $('#rv-text');
+    if (ta && cur && R.kind === 'inbox') {
+      if (AI_SUG[cur.gmail_id]) { ta.value = AI_SUG[cur.gmail_id]; ta.dataset.ai = '1'; }
+      else if (!LOW_TAGS.includes(tagOfMsg(cur)) && can('reply')) aiSuggest(cur, ta, $('[data-rvai]'));
+      setTimeout(() => ta.focus(), 30);
+    }
+  }
+  async function sendInboxReply(m, body, sigId, sigName, btn) {
+    if (!body) { toast('Write your reply first.', true); return false; }
+    if (/\[[^\]]{2,80}\]/.test(body)) { toast('The reply still has a [placeholder]. Fill it in first.', true); return false; }
+    if (!await ask('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?\nSignature: ' + (sigName || 'none'))) return false;
+    if (btn) btn.disabled = true;
+    try {
+      const j = await inboxApi('reply', { person_key: m.person_key, gmail_id: m.gmail_id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, to_address: m.to_address || '', signature_id: sigId, subject: m.subject, body: body });
+      toast(j.message || 'Sent.'); S.inbox = S.inbox.filter((x) => x.gmail_id !== m.gmail_id); delete S.threads[m.person_key]; delete AI_SUG[m.gmail_id];
+      return true;
+    } catch (er) { toast(er.message, true); if (btn) btn.disabled = false; return false; }
+  }
+  async function markInboxDone(id, btn) {
+    if (btn) btn.disabled = true;
+    try { await inboxApi('done', { gmail_id: id }); S.inbox = S.inbox.filter((x) => x.gmail_id !== id); S.inboxTotal = Math.max(0, (S.inboxTotal || 0) - 1); return true; }
+    catch (er) { toast(er.message, true); if (btn) btn.disabled = false; return false; }
+  }
+  document.addEventListener('click', async (e) => {
+    const t = e.target.closest('[data-rvclose],[data-rvskip],[data-rvsend],[data-rvdone],[data-rvai],[data-rvagain],[data-review],[data-ifilter],[data-inboxai],[data-inboxbulk],[data-capoff]');
+    if (!t) return;
+    const R = S.review;
+    if (t.hasAttribute('data-review')) { openReview(t.getAttribute('data-review')); return; }
+    if (t.hasAttribute('data-ifilter')) { S.ifilter = t.getAttribute('data-ifilter'); store.set('ifilter', S.ifilter); render(); return; }
+    if (t.hasAttribute('data-capoff')) { S.capWas = S.cap; S.cap = 0; render(); toast('Showing everything for now. Your limit applies again next time you open the app.'); return; }
+    if (t.hasAttribute('data-inboxai')) { const id = t.getAttribute('data-inboxai'); aiSuggest((S.inbox || []).find((x) => x.gmail_id === id), document.getElementById('ib-' + id), t); return; }
+    if (t.hasAttribute('data-inboxbulk')) {
+      const f = t.getAttribute('data-inboxbulk'); const list = inboxFiltered().slice();
+      if (!list.length || !await ask('Mark all ' + list.length + ' messages in ' + ITAG[f][0] + ' as handled?\nNo email is sent. They leave the inbox list but stay in each contact\'s history.')) return;
+      t.disabled = true; let n = 0;
+      for (const m of list) { t.textContent = 'Clearing ' + (++n) + ' of ' + list.length + '…'; if (!await markInboxDone(m.gmail_id)) break; }
+      toast(n + ' marked as handled.'); render(); return;
+    }
+    if (!R) return;
+    if (t.hasAttribute('data-rvclose')) { closeReview(); return; }
+    if (t.hasAttribute('data-rvagain')) { R.skipped = []; renderReview(true); return; }
+    if (t.hasAttribute('data-rvskip')) { R.skipped.push(t.getAttribute('data-rvskip')); renderReview(true); return; }
+    const m = (S.inbox || []).find((x) => x.gmail_id === (t.getAttribute('data-rvsend') || t.getAttribute('data-rvdone') || t.getAttribute('data-rvai')));
+    if (t.hasAttribute('data-rvai')) { if (m) { delete AI_SUG[m.gmail_id]; const ta = $('#rv-text'); if (ta) ta.dataset.ai = '1'; aiSuggest(m, ta, t); } return; }
+    if (!m) return;
+    if (t.hasAttribute('data-rvdone')) { if (await markInboxDone(m.gmail_id, t)) { R.done++; renderReview(true); renderChrome(); } return; }
+    if (t.hasAttribute('data-rvsend')) {
+      const ss = $('#rv-sig'); const sigName = ss && ss.selectedIndex >= 0 ? ss.options[ss.selectedIndex].text : '';
+      if (await sendInboxReply(m, ($('#rv-text') || {}).value ? $('#rv-text').value.trim() : '', ss ? ss.value : '', sigName, t)) { R.done++; renderReview(true); renderChrome(); }
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    const R = S.review; if (!R || $('.dlg-wrap') || S.drawer) return;
+    const typing = /^(input|textarea|select)$/i.test(e.target.tagName || '');
+    if (e.key === 'Escape') { e.preventDefault(); closeReview(); return; }
+    if (R.kind === 'inbox' && (e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); const b = $('[data-rvsend]'); if (b) b.click(); return; }
+    if (typing) return;
+    const k = e.key.toLowerCase();
+    if (k === 's' || e.key === 'ArrowRight') { const b = $('[data-rvskip]'); if (b) { e.preventDefault(); b.click(); } }
+    if (R.kind === 'inbox' && k === 'h') { const b = $('[data-rvdone]'); if (b) { e.preventDefault(); b.click(); } }
+    if (R.kind === 'inbox' && k === 'a') { const b = $('[data-rvai]'); if (b) { e.preventDefault(); b.click(); } }
+  });
+  try {
+    document.head.insertAdjacentHTML('beforeend', '<style>' +
+      '.rv-wrap{position:fixed;inset:0;z-index:45;background:rgba(10,18,24,.5);display:grid;place-items:center;padding:16px}.rv{background:var(--bg);border-radius:14px;box-shadow:var(--shadow);width:min(860px,100%);max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden}' +
+      '.rv-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--surface)}.rv-body{padding:16px 18px;overflow:auto;display:flex;flex-direction:column;gap:12px}.rv-msg{max-height:34vh;overflow:auto}.rv-keys{font-size:12px}' +
+      '.pill.tag-hot{background:var(--saffron);color:#fff}.pill.tag-ops{background:var(--accent-soft);color:var(--accent)}.pill.tag-q{background:var(--surface-2)}.pill.tag-later,.pill.tag-no{opacity:.8}.pill.tag-low{opacity:.6}' +
+      '.cap-note{display:flex;gap:10px;align-items:center;flex-wrap:wrap}' +
+      '@media (max-width:760px){.rv-wrap{padding:0}.rv{max-height:100vh;height:100vh;border-radius:0}.rv-keys{display:none}}' +
+      '</style>');
+  } catch (e) { /* optional */ }
 
   // ---------- render & events ----------
   function render() {
@@ -1891,6 +2048,7 @@
     if (!viewAllowed(S.view)) S.view = 'today';
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
+    if (S.review) renderReview(false);
     bindViewInputs();
     if (S.view === 'bulk') { bindBulk(); if (S.mode === 'live' && !BK.loaded && !BK.loading) loadBulk(); }
     if (S.view === 'team') { bindTeam(); if (S.mode === 'live' && !TM.loaded && !TM.loading) loadTeam(); }
@@ -2018,6 +2176,7 @@
       if (fg) fg.addEventListener('click', () => { store.del('key'); S.key = ''; S.error = ''; load(); toast('Key removed from this device.'); });
     }
     wireSigForm();
+    const scap = $('#s-cap'); if (scap) scap.addEventListener('change', () => { S.cap = Math.max(0, parseInt(scap.value, 10) || 0); store.set('cap', String(S.cap)); toast(S.cap ? 'Today will show up to ' + S.cap + ' tasks.' : 'No daily limit.'); });
     const stheme = $('#s-theme');
     if (stheme) {
       stheme.addEventListener('change', (e) => {
@@ -2099,11 +2258,7 @@
       if (!body) { toast('Write your reply first.', true); if (ta) ta.focus(); return; }
       const ss = document.getElementById('ibs-' + id); const sigId = ss ? ss.value : '';
       const sigName = ss && ss.selectedIndex >= 0 ? ss.options[ss.selectedIndex].text : '';
-      if (!await ask('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?\nSignature: ' + sigName)) return;
-      t.disabled = true;
-      inboxApi('reply', { person_key: m.person_key, gmail_id: id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, to_address: m.to_address || '', signature_id: sigId, subject: m.subject, body: body })
-        .then((j) => { toast(j.message || 'Sent.'); S.inbox = S.inbox.filter((x) => x.gmail_id !== id); delete S.threads[m.person_key]; render(); })
-        .catch((er) => { toast(er.message, true); t.disabled = false; });
+      if (await sendInboxReply(m, body, sigId, sigName, t)) render();
       return;
     }
     if (t.hasAttribute('data-sendmail')) {
