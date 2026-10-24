@@ -100,6 +100,7 @@
   const stageOf = (k) => STAGES.find((s) => s.key === k) || { key: k, label: String(k || 'Unknown').replace(/_/g, ' ').toLowerCase(), group: 'ready' };
   const PILL = { new: 's-new', ready: 's-ready', wait: 's-wait', conn: 's-conn', hot: 's-hot', dead: 's-dead' };
   const statusPill = (k) => { const s = stageOf(k); return '<span class="pill ' + PILL[s.group] + '">' + esc(s.label) + '</span>'; };
+  const trackPill = (c) => (c && c.track === 'email' ? '<span class="pill s-conn" title="Warm contact from your mailboxes: follow-ups go by email">Email track</span>' : '');
   const ACTIVE_FOLLOW = ['CONNECTED', 'FIRST_CONVERSATION', 'ENGAGED', 'OPPORTUNITY', 'COLLABORATION', 'NURTURE'];
 
   const campaigns = () => (S.data ? S.data.campaigns : []);
@@ -534,13 +535,14 @@
   const fromMailbox = (c) => /^my mailbox/i.test(String(c.source || ''));
   const isWaitingDisc = (c) => (['IDENTIFIED', 'RESEARCHED'].includes(c.status) || (c.status === 'QUALIFIED' && !c.linkedin_url)) && !isDnc(c);
   function discoveryGateHtml() {
-    const pile = {}; let mail = 0;
+    const pile = {}; let mail = 0; const onTrack = S.data.contacts.filter((c) => c.track === 'email' && !isDnc(c)); const drafted = onTrack.filter((c) => c.pending_message).length;
     S.data.contacts.forEach((c) => { if (!isWaitingDisc(c)) return; if (fromMailbox(c)) { mail++; return; } pile[c.campaign_code] = (pile[c.campaign_code] || 0) + 1; });
     const rows = campaigns().filter((c) => c.auto_discovery === true || c.auto_discovery === 'true' || pile[c.campaign_code]).map((c) => {
       const n = pile[c.campaign_code] || 0; const lim = num(c.discovery_pause_at) || 60; const paused = n >= lim;
       return '<tr><td>' + esc(c.campaign_name || c.campaign_code) + '</td><td class="num">' + n + ' / ' + lim + '</td><td>' + (paused ? '<span class="pill s-dead">paused: work through these first</span>' : (c.auto_discovery === true || c.auto_discovery === 'true' ? '<span class="pill s-conn">finding more</span>' : '<span class="pill">discovery off</span>')) + '</td></tr>';
     }).join('');
     let h = '';
+    if (onTrack.length) h += '<div class="panel section"><h2>' + onTrack.length + ' mailbox contacts are on the email track</h2><p>They are warm contacts you have emailed before. Each morning at 9:00 the engine drafts renewal emails for 10 of them (best first); the drafts appear on Today under Follow-ups ready, marked Email track. Nothing is sent until you press Send. ' + (drafted ? 'Drafts waiting now: ' + drafted + '.' : '') + '</p></div>';
     if (mail) h += '<div class="panel section"><h2>' + mail + ' people from your mailboxes</h2><p>They are qualified and you have emailed them before, but they have no LinkedIn link, so they never reach the connect queue. Reach them by email instead: open Contacts → Reconnect for the quiet ones, or add them to a bulk email list. They are not shown below.</p></div>';
     if (rows) h += '<div class="panel section"><h2>Discovery pauses when the pile is full</h2><p class="faint">The weekly search stops adding people to a campaign while 60 or more found people are waiting for a LinkedIn link or a decision. Running Discover for one campaign by hand still works.</p><div class="table-wrap"><table><thead><tr><th>Campaign</th><th>Waiting</th><th>Discovery</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
     return h;
@@ -652,14 +654,16 @@
   function draftCard(c) {
     const isReply = /^They replied/.test(c.last_contact_summary || '');
     const hasEmail = c.email && c.email_status !== 'invalid';
+    const emailTrack = c.track === 'email';
     return '<article class="card"><div class="card-head">' + whoBlock(c) + '<div class="actions">' + statusPill(c.status) +
-      '<span class="pill">' + (isReply ? 'Reply to their message' : 'Follow-up #' + (num(c.followup_count) + 1)) + '</span><span class="pill">' + esc(c.pending_channel || 'linkedin') + '</span></div></div>' +
+      '<span class="pill">' + (isReply ? 'Reply to their message' : (emailTrack && !num(c.followup_count) ? 'Email renewal' : 'Follow-up #' + (num(c.followup_count) + 1))) + '</span>' + trackPill(c) + '<span class="pill">' + esc(c.pending_channel || 'linkedin') + '</span></div></div>' +
       (c.last_contact_summary ? '<div class="faint">Last: ' + esc(c.last_contact_summary) + ' (' + fmtDate(c.last_contact_date) + ')</div>' : '') +
       (c.pending_subject ? '<div><b>Subject:</b> ' + esc(c.pending_subject) + '</div>' : '') +
       '<div class="draft">' + esc(c.pending_message) + '</div>' +
-      '<div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' + liBtn(c) +
-      act(c, isReply ? 'replied' : 'fu_linkedin', isReply ? 'I sent this reply' : 'Sent on LinkedIn', 'good') +
+      '<div class="actions"><button type="button" class="btn sm" data-copy="' + esc(c.pending_message) + '">Copy</button>' + (emailTrack ? '' : liBtn(c) +
+      act(c, isReply ? 'replied' : 'fu_linkedin', isReply ? 'I sent this reply' : 'Sent on LinkedIn', 'good')) +
       (hasEmail && !isReply ? act(c, 'fu_email', 'Create Gmail draft') : '') +
+      (emailTrack && hasPlaceholder(c.pending_message) ? '<span class="faint">Fill the [bracketed] part in Details → Edit before sending.</span>' : '') +
       (canEmail(c) && !hasPlaceholder(c.pending_message) ? '<button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send email now</button>' : '') +
       waBtn(c, c.pending_message) +
       '<button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">They replied</button>' + act(c, 'snooze', 'Snooze 7 days', 'ghost') + act(c, 'dnc', 'Do not contact', 'ghost bad') + '</div></article>';
@@ -767,7 +771,7 @@
     h += '<div class="panel table-wrap" style="padding:0"><table><thead><tr>' + th('full_name', 'Person') + th('campaign_code', 'Campaign') + th('status', 'Stage') +
       th('priority_score', 'Score', true) + th('next_followup_date', 'Next touch') + th('last_contact_date', 'Last contact') + '</tr></thead><tbody>';
     h += list.map((c) => '<tr class="click" data-open="' + esc(c.person_key) + '" tabindex="0"><td><b>' + esc(c.full_name) + '</b><div class="faint">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</div></td>' +
-      '<td>' + esc(campaignName(c.campaign_code)) + '</td><td>' + statusPill(c.status) + (isDnc(c) ? '' : '') + '</td><td class="r"><span class="pill ' + esc(c.priority || 'C') + '">' + esc(c.priority_score) + '</span></td>' +
+      '<td>' + esc(campaignName(c.campaign_code)) + '</td><td>' + statusPill(c.status) + trackPill(c) + '</td><td class="r"><span class="pill ' + esc(c.priority || 'C') + '">' + esc(c.priority_score) + '</span></td>' +
       '<td class="num">' + (c.next_followup_date ? fmtDate(c.next_followup_date) + ' <span class="faint">' + relDays(c.next_followup_date) + '</span>' : '<span class="faint">—</span>') + '</td>' +
       '<td class="num">' + (c.last_contact_date ? fmtDate(c.last_contact_date) : '<span class="faint">—</span>') + '</td></tr>').join('');
     if (!list.length) h += '<tr><td colspan="6"><div class="empty" style="border:0">Nobody in your list matches these filters.' +
@@ -807,7 +811,7 @@
     root.innerHTML = '<div class="scrim" data-close></div><aside class="drawer" role="dialog" aria-modal="true" aria-label="' + esc(c.full_name) + '">' +
       '<div class="dhead"><div class="card-head"><div class="who"><h2>' + esc(c.full_name) + '</h2><span class="role">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span></div>' +
       '<button type="button" class="btn ghost" data-close aria-label="Close">Close</button></div>' +
-      '<div class="actions">' + statusPill(c.status) + '<span class="pill ' + esc(c.priority || 'C') + '">Priority ' + esc(c.priority || 'C') + ' · ' + esc(c.priority_score) + '</span><span class="pill">' + esc(campaignName(c.campaign_code)) + '</span></div>' +
+      '<div class="actions">' + statusPill(c.status) + trackPill(c) + '<span class="pill ' + esc(c.priority || 'C') + '">Priority ' + esc(c.priority || 'C') + ' · ' + esc(c.priority_score) + '</span><span class="pill">' + esc(campaignName(c.campaign_code)) + '</span></div>' +
       '<div class="actions">' + liBtn(c) + (isDnc(c) ? '' : quick) + '<a class="btn sm ghost" target="_blank" rel="noopener" href="' + esc(calLink(c)) + '">Schedule a call</a>' + '</div>' +
       '<div class="chips dtabs" role="tablist">' + dtabBtn('over', 'Overview') + dtabBtn('conv', 'Conversation' + (hist.length ? ' · ' + hist.length : '')) + dtabBtn('edit', 'Edit & assign') + '</div></div>' +
       '<div class="dtab" data-pane="over"' + hid('over') + '>' +
