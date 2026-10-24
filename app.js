@@ -15,6 +15,7 @@
     key: store.get('key', ''),
     sid: store.get('sid', ''),
     me: null,
+    ctab: 'list', cptab: 'campaigns', stab: 'account', addm: store.get('addm', ''), dtab: 'over', landed: false,
     data: null,
     inbox: [],
     threads: {},
@@ -138,7 +139,7 @@
   }
   async function loadSigs() {
     if (S.mode !== 'live') return;
-    try { const j = await inboxApi('sig_list'); S.sigs = j.signatures || []; if (S.view === 'settings' || S.view === 'today') render(); if (S.drawer) renderDrawer(); } catch (e) { S.sigs = S.sigs || []; }
+    try { const j = await inboxApi('sig_list'); S.sigs = j.signatures || []; if (S.view === 'settings' || S.view === 'today' || S.view === 'inbox') render(); if (S.drawer) renderDrawer(); } catch (e) { S.sigs = S.sigs || []; }
   }
   const cleanSigHtml = (h) => String(h || '').replace(/<(script|style)[\s\S]*?<\/\1>/gi, '').replace(/<(meta|link|script|style)[^>]*>/gi, '').replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/javascript:/gi, '').trim();
   const CAT_ORDER = ['Travel trade', 'Medical & wellness', 'Academic & research', 'Corporate', 'Government & public sector', 'Media & community'];
@@ -237,11 +238,11 @@
   }
   async function loadReconnect() {
     if (S.mode !== 'live') return;
-    try { const j = await rcApi('list'); S.reconnect = { list: j.list || [], total: j.total || 0, scan: j.scan || [], loaded: true }; if (S.view === 'today' || S.view === 'settings') render(); } catch (e) { /* keep the old list */ }
+    try { const j = await rcApi('list'); S.reconnect = { list: j.list || [], total: j.total || 0, scan: j.scan || [], loaded: true }; if (['today', 'settings', 'contacts'].includes(S.view)) render(); } catch (e) { /* keep the old list */ }
   }
   async function loadInbox() {
     if (S.mode !== 'live') return;
-    try { const j = await inboxApi('list'); S.inbox = j.inbox || []; if (S.view === 'today') render(); } catch (e) { S.inbox = S.inbox || []; }
+    try { const j = await inboxApi('list'); S.inbox = j.inbox || []; if (['today', 'inbox'].includes(S.view)) render(); else renderChrome(); } catch (e) { S.inbox = S.inbox || []; }
   }
   async function loadThread(key) {
     if (S.mode !== 'live' || !key) return;
@@ -261,6 +262,7 @@
     S.loading = true; if (!quiet) renderChrome();
     try {
       if (!S.me) await loadMe();
+      if (!S.landed) { S.landed = true; if (!S.hashGiven && S.me) { const r = S.me.role; S.view = r === 'staff' ? 'inbox' : (r === 'viewer' ? 'contacts' : 'today'); } }
       const j = await api('bootstrap');
       S.data = { contacts: j.contacts || [], campaigns: j.campaigns || [], interactions: j.interactions || [], content: j.content || [], suppressed: j.suppressed || 0 };
       S.mode = 'live'; S.error = ''; S.lastSync = new Date(); S.threads = {};
@@ -369,18 +371,20 @@
 
   // ---------- chrome (nav, banner) ----------
   const VIEWS = [
-    { id: 'today', label: 'Today' },
-    { id: 'pipeline', label: 'Pipeline' },
-    { id: 'contacts', label: 'Contacts' },
-    { id: 'campaigns', label: 'Campaigns' },
-    { id: 'bulk', label: 'Bulk email' },
-    { id: 'library', label: 'Library' },
-    { id: 'add', label: 'Add people' },
-    { id: 'guide', label: 'How it works' },
-    { id: 'team', label: 'Team' },
-    { id: 'settings', label: 'Settings' }
+    { id: 'today', label: 'Today', g: 'Daily work' },
+    { id: 'inbox', label: 'Inbox', g: 'Daily work' },
+    { id: 'contacts', label: 'Contacts', g: 'Daily work' },
+    { id: 'add', label: 'Add people', g: 'Grow' },
+    { id: 'campaigns', label: 'Campaigns', g: 'Grow' },
+    { id: 'bulk', label: 'Bulk email', g: 'Grow' },
+    { id: 'team', label: 'Team', g: 'Admin' },
+    { id: 'settings', label: 'Settings', g: 'Admin' }
   ];
-  const viewAllowed = (id) => { if (!S.me) return id !== 'team'; if (id === 'team') return can('members') || can('approve'); if (id === 'bulk') return can('bulk_draft') || can('approve'); if (id === 'add') return can('import') || can('edit_contacts'); return true; };
+  // old addresses keep working: they open the page that now holds them
+  const ALIAS = { pipeline: ['contacts', 'ctab', 'overview'], library: ['campaigns', 'cptab', 'library'], discovered: ['contacts', 'ctab', 'discovered'], reconnect: ['contacts', 'ctab', 'reconnect'] };
+  const ROUTES = VIEWS.map((v) => v.id).concat(['guide']);
+  const MOBILE_MAIN = ['today', 'inbox', 'contacts', 'add'];
+  const viewAllowed = (id) => { if (id === 'guide') return true; if (!S.me) return id !== 'team'; if (id === 'team') return can('members') || can('approve'); if (id === 'bulk') return can('bulk_draft') || can('approve'); if (id === 'add') return can('import') || can('edit_contacts'); return true; };
   const navViews = () => VIEWS.filter((v) => viewAllowed(v.id));
   try {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
@@ -413,12 +417,26 @@
   }
   function renderChrome() {
     const todayCount = S.data ? queueList().queue.length + checksList().length + draftsList().length : 0;
-    const navHtml = navViews().map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '><span>' + v.label + '</span>' +
-      (v.id === 'today' && todayCount ? '<span class="count num">' + todayCount + '</span>' : '') + '</button>').join('');
+    const inboxCount = (S.inbox || []).length;
+    const badge = (id) => { const n = id === 'today' ? todayCount : (id === 'inbox' ? inboxCount : 0); return n ? '<span class="count num">' + n + '</span>' : ''; };
+    let lastG = ''; let navHtml = '';
+    navViews().forEach((v) => {
+      if (v.g !== lastG) { navHtml += '<div class="nav-group">' + esc(v.g) + '</div>'; lastG = v.g; }
+      navHtml += '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '><span>' + v.label + '</span>' + badge(v.id) + '</button>';
+    });
     $('#nav').innerHTML = navHtml;
-    $('#mobile-nav').innerHTML = navViews().map((v) => '<button type="button" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' +
-      (v.id === 'add' ? 'Add' : (v.id === 'guide' ? 'Help' : (v.id === 'campaigns' ? 'Camps' : (v.id === 'bulk' ? 'Bulk' : v.label)))) + (v.id === 'today' && todayCount ? ' · ' + todayCount : '') + '</button>').join('');
-
+    const allowed = navViews().map((v) => v.id);
+    const main = MOBILE_MAIN.filter((id) => allowed.includes(id));
+    const short = { add: 'Add', contacts: 'Contacts' };
+    const inMore = !main.includes(S.view);
+    $('#mobile-nav').innerHTML = main.map((id) => { const v = VIEWS.find((x) => x.id === id); const n = id === 'today' ? todayCount : (id === 'inbox' ? inboxCount : 0);
+      return '<button type="button" data-nav="' + id + '"' + (S.view === id ? ' aria-current="page"' : '') + '>' + (short[id] || v.label) + (n ? ' · ' + n : '') + '</button>'; }).join('') +
+      '<button type="button" data-more' + (inMore ? ' aria-current="page"' : '') + '>More</button>';
+    const ms = $('#more-sheet');
+    if (ms) ms.innerHTML = '<div class="more-panel" role="menu">' + navViews().filter((v) => !main.includes(v.id)).map((v) => '<button type="button" role="menuitem" data-nav="' + v.id + '"' + (S.view === v.id ? ' aria-current="page"' : '') + '>' + v.label + '</button>').join('') +
+      '<button type="button" role="menuitem" data-nav="guide">How it works</button></div>';
+    const abs = $('#ab-sync'); if (abs) abs.textContent = S.loading ? 'Syncing…' : (S.lastSync ? 'Synced ' + S.lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '');
+    const abr = $('#ab-refresh'); if (abr) abr.disabled = !!S.loading;
     const dot = $('#conn-dot'); const txt = $('#conn-text');
     dot.className = 'dot ' + (S.mode === 'live' ? 'live' : 'demo');
     txt.textContent = S.loading ? 'Syncing…' : (S.mode === 'live' ? (S.me ? S.me.name + ' · ' + (ROLE_LABEL[S.me.role] || S.me.role) : 'Connected to n8n') : 'Demo data');
@@ -430,8 +448,7 @@
   }
 
   function topbar(title, sub, extra) {
-    return '<div class="topbar"><div><h1>' + title + '</h1>' + (sub ? '<p>' + sub + '</p>' : '') + '</div><div class="top-actions">' + (extra || '') +
-      '<button class="btn" type="button" data-refresh' + (S.loading ? ' disabled' : '') + '>' + (S.loading ? 'Syncing…' : 'Refresh') + '</button></div></div>';
+    return '<div class="topbar"><div><h1>' + title + '</h1>' + (sub ? '<p>' + sub + '</p>' : '') + '</div>' + (extra ? '<div class="top-actions">' + extra + '</div>' : '') + '</div>' + (S._tabs || '');
   }
 
   // ---------- TODAY ----------
@@ -441,16 +458,57 @@
     const dateStr = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
     let h = topbar('Today', dateStr + ' · ' + queue.length + ' to connect · ' + checks.length + ' to check · ' + drafts.length + ' follow-ups ready');
     if (!S.data.contacts.length) return h + onboardCard();
+    h += todayTiles(queue.length, checks.length, drafts.length);
+    h += fold('connect', 'Connect on LinkedIn', queue.length, 'Open the profile, send the request yourself, then log which note you used.' + (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : ''),
+      queue.length ? '<div class="cards">' + queue.map(queueCard).join('') + '</div>' : '<div class="empty">Nobody is waiting to be contacted. Add people from Add people.</div>');
+
+    h += fold('check', 'Did they accept?', checks.length, 'Requests and follows that are due for a check.',
+      checks.length ? '<div class="panel table-wrap"><table><tbody>' + checks.map(checkRow).join('') + '</tbody></table></div>' : '<div class="empty">No pending requests need a check today.</div>');
+
+    h += fold('drafts', 'Follow-ups ready', drafts.length, 'Drafted each morning at 9:00. Edit before sending; nothing goes out automatically.',
+      drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>');
+    return h;
+  }
+
+  // ---------- page helpers: tiles, folding sections, sub-tabs ----------
+  const FOLDS = (() => { try { return JSON.parse(store.get('folds', '{}')) || {}; } catch (e) { return {}; } })();
+  function fold(id, title, count, hint, body) {
+    return '<details class="section fold" id="sec-' + id + '" data-fold="' + id + '"' + (FOLDS[id] ? '' : ' open') + '><summary class="section-head"><h2>' + esc(title) + (count !== null && count !== undefined ? ' <span class="fold-n">' + count + '</span>' : '') + '</h2>' +
+      (hint ? '<span class="hint">' + hint + '</span>' : '') + '</summary>' + body + '</details>';
+  }
+  function tile(n, label, go, tone) { return '<button type="button" class="tile' + (n ? ' ' + (tone || '') : ' zero') + '" data-go="' + go + '"><span class="tile-n num">' + n + '</span><span class="tile-l">' + esc(label) + '</span></button>'; }
+  function todayTiles(nq, nc, nd) {
+    const rc = S.reconnect && S.reconnect.loaded ? S.reconnect.total || 0 : 0;
+    const disc = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c)).length + S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).length;
+    return '<div class="tiles">' + tile((S.inbox || []).length, 'replies waiting', 'inbox', 'hot') + tile(nq, 'to connect', '#sec-connect') + tile(nc, 'to check', '#sec-check') + tile(nd, 'follow-ups ready', '#sec-drafts', 'hot') +
+      tile(rc, 'to reconnect', 'contacts:reconnect') + tile(disc, 'newly discovered', 'contacts:discovered') + '</div>';
+  }
+  function subTabs(key, list) {
+    return '<div class="chips subtabs" role="tablist">' + list.map((t) => '<button type="button" role="tab" class="chip' + (S[key] === t[0] ? ' on' : '') + '" aria-selected="' + (S[key] === t[0]) + '" data-subtab="' + key + ':' + t[0] + '">' + esc(t[1]) + (t[2] ? ' <span class="fold-n">' + t[2] + '</span>' : '') + '</button>').join('') + '</div>';
+  }
+  function withTabs(tabsHtml, fn) { S._tabs = tabsHtml; try { return fn(); } finally { S._tabs = ''; } }
+
+  // ---------- INBOX (replies from every mailbox you work from) ----------
+  function inboxSection() {
+    let h = '';
     const inbox = (S.inbox || []);
     if (inbox.length) {
       h += '<section class="section"><div class="section-head"><h2>Inbox · ' + inbox.length + ' new ' + (inbox.length === 1 ? 'reply' : 'replies') + '</h2><span class="hint">Replies from your contacts to any of your connected addresses, checked every 10 minutes. Your answer goes back in the same email thread, from the address they wrote to.</span></div><div class="cards">' + inbox.map(inboxCard).join('') + '</div></section>';
     }
 
-    h += '<section class="section"><div class="section-head"><h2>Connect on LinkedIn</h2><span class="hint">Open the profile, send the request yourself, then log which note you used.' +
-      (backlog > 0 ? ' ' + backlog + ' more wait behind today\'s campaign limits.' : '') + '</span></div>';
-    h += queue.length ? '<div class="cards">' + queue.map(queueCard).join('') + '</div>' : '<div class="empty">Nobody is waiting to be contacted. Add people from the Add people tab.</div>';
-    h += '</section>';
+    return h;
+  }
+  function renderInbox() {
+    const n = (S.inbox || []).length;
+    let h = topbar('Inbox', n ? n + ' new ' + (n === 1 ? 'reply' : 'replies') + ' to answer' : 'Replies from your contacts arrive here, checked every 10 minutes.');
+    if (S.mode !== 'live') return h + '<div class="empty">Sign in to see replies.</div>';
+    const body = inboxSection();
+    return h + (body || '<div class="empty">No new replies. Replies to any mailbox you work from appear here within 10 minutes. Answers go back in the same email thread.</div>');
+  }
 
+  // ---------- CONTACTS: list · overview · discovered · reconnect ----------
+  function discoveredSection() {
+    let h = '';
     const found = S.data.contacts.filter((c) => c.status === 'QUALIFIED' && !c.linkedin_url && !isDnc(c)).sort((a, b) => num(b.priority_score) - num(a.priority_score)).slice(0, 12);
     const pending = S.data.contacts.filter((c) => ['IDENTIFIED', 'RESEARCHED'].includes(c.status) && !isDnc(c)).sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
     if (pending.length) {
@@ -463,15 +521,23 @@
         (c.email && !['invalid', 'none'].includes(c.email_status) ? '<span class="pill s-conn">email ' + esc(String(c.email_status).replace(/_/g, ' ')) + '</span>' : '') + '<button type="button" class="btn sm" data-open="' + esc(c.person_key) + '">Details</button>' + act(c, 'notrelevant', 'Not relevant', 'ghost bad') + '</div></td></tr>').join('') + '</tbody></table></div></section>';
     }
 
-    h += '<section class="section"><div class="section-head"><h2>Did they accept?</h2><span class="hint">Requests and follows that are due for a check.</span></div>';
-    h += checks.length ? '<div class="panel table-wrap"><table><tbody>' + checks.map(checkRow).join('') + '</tbody></table></div>' : '<div class="empty">No pending requests need a check today.</div>';
-    h += '</section>';
+    return h || '<div class="empty">Nothing new right now. Run Discover new people (Settings → Automation) or add people yourself.</div>';
+  }
+  function renderContactsPage() {
+    if (!S.data.contacts.length && S.ctab === 'list') return renderContacts();
+    const disc = S.data.contacts.filter((c) => (['IDENTIFIED', 'RESEARCHED'].includes(c.status) || (c.status === 'QUALIFIED' && !c.linkedin_url)) && !isDnc(c)).length;
+    const rc = S.reconnect && S.reconnect.loaded ? S.reconnect.total || 0 : 0;
+    const tabs = subTabs('ctab', [['list', 'All contacts'], ['overview', 'Overview'], ['discovered', 'Discovered', disc], ['reconnect', 'Reconnect', rc]]);
+    if (S.ctab === 'overview') return withTabs(tabs, renderPipeline);
+    if (S.ctab === 'discovered') return withTabs(tabs, () => topbar('Contacts', 'New people the engine found, and qualified people still missing a LinkedIn profile.') + discoveredSection());
+    if (S.ctab === 'reconnect') return withTabs(tabs, () => topbar('Contacts', 'Warm contacts from your mailboxes who have gone quiet.') + (reconnectSection() || '<div class="empty">' + (S.mode === 'live' ? 'Loading…' : 'Sign in to see people to reconnect with.') + '</div>'));
+    return withTabs(tabs, renderContacts);
+  }
 
-    h += '<section class="section"><div class="section-head"><h2>Follow-ups ready</h2><span class="hint">Drafted each morning at 9:00. Edit before sending; nothing goes out automatically.</span></div>';
-    h += drafts.length ? '<div class="cards">' + drafts.map(draftCard).join('') + '</div>' : '<div class="empty">No drafts waiting.' + (due.length ? ' ' + due.length + ' relationships are due; their drafts arrive at the next 9:00 run.' : '') + '</div>';
-    h += '</section>';
-    h += reconnectSection();
-    return h;
+  // ---------- CAMPAIGNS: campaigns · content library ----------
+  function renderCampaignsPage() {
+    const tabs = subTabs('cptab', [['campaigns', 'Campaigns'], ['library', 'Content library', (S.data.content || []).length]]);
+    return withTabs(tabs, S.cptab === 'library' ? renderLibrary : renderCampaigns);
   }
 
   const MB_NAME = { b2b0: 'info@b2btourdeals.com', b2b1: 'ops1', b2b2: 'ops2', b2b3: 'ops3', b2b4: 'ops4', b2b5: 'ops5', b2b6: 'ops6', b2b7: 'ops7', kn: 'kn0733', info: 'info@negotrip.com', icssr: 'icssrmedicaltourism', assign: 'assignover', hpcu: 'ra1.tourism@hpcu' };
@@ -573,7 +639,7 @@
     const accRate = conn + ignored ? Math.round((conn / (conn + ignored)) * 100) + '% acceptance' : 'acceptance rate appears after first results';
     const weekAgo = (() => { const d = new Date(todayISO() + 'T00:00:00'); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10); })();
 
-    let h = topbar('Pipeline', 'Where every relationship stands, across all campaigns.');
+    let h = topbar('Contacts', 'Where every relationship stands, across all campaigns.');
     h += '<div class="kpis">' +
       kpi('Contacts', cs.length, count((c) => (c.added_on || '') >= weekAgo) + ' added this week') +
       kpi('Ready to connect', ready, queueList().queue.length + ' in today\'s queue') +
@@ -697,11 +763,16 @@
     }[c.status] || act(c, 'snooze', 'Snooze 7 days');
     const notes = [1, 2, 3].map((v) => c['msg_variant_' + v] ? '<div class="note"><div class="note-top"><span>Note ' + v + '</span><span class="num">' + c['msg_variant_' + v].length + '</span></div><p>' + esc(c['msg_variant_' + v]) + '</p><div class="note-actions"><button type="button" class="btn sm" data-copy="' + esc(c['msg_variant_' + v]) + '">Copy</button></div></div>' : '').join('');
 
+    if (S.dtabFor !== c.person_key) { S.dtab = 'over'; S.dtabFor = c.person_key; }
+    const hid = (t) => (S.dtab === t ? '' : ' hidden');
+    const dtabBtn = (t, label) => '<button type="button" role="tab" class="chip' + (S.dtab === t ? ' on' : '') + '" aria-selected="' + (S.dtab === t) + '" data-dtab="' + t + '">' + label + '</button>';
     root.innerHTML = '<div class="scrim" data-close></div><aside class="drawer" role="dialog" aria-modal="true" aria-label="' + esc(c.full_name) + '">' +
-      '<div class="card-head"><div class="who"><h2>' + esc(c.full_name) + '</h2><span class="role">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span></div>' +
+      '<div class="dhead"><div class="card-head"><div class="who"><h2>' + esc(c.full_name) + '</h2><span class="role">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span></div>' +
       '<button type="button" class="btn ghost" data-close aria-label="Close">Close</button></div>' +
       '<div class="actions">' + statusPill(c.status) + '<span class="pill ' + esc(c.priority || 'C') + '">Priority ' + esc(c.priority || 'C') + ' · ' + esc(c.priority_score) + '</span><span class="pill">' + esc(campaignName(c.campaign_code)) + '</span></div>' +
       '<div class="actions">' + liBtn(c) + (isDnc(c) ? '' : quick) + '<a class="btn sm ghost" target="_blank" rel="noopener" href="' + esc(calLink(c)) + '">Schedule a call</a>' + '</div>' +
+      '<div class="chips dtabs" role="tablist">' + dtabBtn('over', 'Overview') + dtabBtn('conv', 'Conversation' + (hist.length ? ' · ' + hist.length : '')) + dtabBtn('edit', 'Edit & assign') + '</div></div>' +
+      '<div class="dtab" data-pane="over"' + hid('over') + '>' +
       (c.why_this_person ? '<div class="why"><b>Why this person:</b> ' + esc(c.why_this_person) + '</div>' : '') +
       (c.opportunity_type ? '<div class="opp"><b>Opportunity · ' + esc(String(c.opportunity_type).replace(/_/g, ' ')) + ':</b> ' + esc(c.opportunity_note) + '</div>' : '') +
       (c.recommended_action && c.recommended_action.length > 12 ? '<div class="faint"><b>Suggested next step:</b> ' + esc(c.recommended_action) + '</div>' : '') +
@@ -735,14 +806,16 @@
         act(c, /^They replied/.test(c.last_contact_summary || '') ? 'replied' : 'fu_linkedin', 'Mark as sent', 'good') +
         (canEmail(c) ? '<label class="field" for="d-from" style="min-width:220px">Send from<select id="d-from">' + fromOptionsHtml('', c.send_mailbox ? 'Home address: ' + mbAddr(c.send_mailbox) : 'Automatic (campaign address)') + '</select></label><label class="field" for="d-sig" style="min-width:220px">Signature<select id="d-sig">' + sigOptionsHtml(c.send_mailbox ? mbAddr(c.send_mailbox) : '', '') + '</select></label><button type="button" class="btn sm primary" data-sendmail="' + esc(c.person_key) + '">Send as email now</button>' : '') +
         waBtn(c, c.pending_message) + '</div></div>' : '') +
-      '<div class="section"><h3>Email conversation</h3>' + threadHtml(c) + '</div>' +
       (notes && c.status === 'READY_FOR_CONNECTION' ? '<div class="section"><h3>Connection notes</h3><div class="notes">' + notes + '</div></div>' : '') +
+      '</div><div class="dtab" data-pane="conv"' + hid('conv') + '>' +
+      '<div class="section"><h3>Email conversation</h3>' + threadHtml(c) + '</div>' +
       '<div class="section"><h3>History</h3>' + (hist.length ? '<div class="timeline">' + hist.map((i) => '<div class="tl ' + (i.direction === 'inbound' ? 'in' : (i.direction === 'outbound' ? 'out' : '')) + '"><div class="meta">' + fmtDate(i.interaction_date) + ' · ' + esc(i.channel) + ' · ' + esc(String(i.interaction_type || '').replace(/_/g, ' ')) + (i.intent ? ' · ' + esc(i.intent.replace(/_/g, ' ').toLowerCase()) : '') + '</div>' + (i.message ? '<div class="msg">' + esc(i.message) + '</div>' : '') + '</div>').join('') + '</div>' : '<div class="faint">Nothing logged yet.</div>') + '</div>' +
       (isDnc(c) ? '' : '<form class="panel section" id="reply-form"><h3>Log their reply</h3><p class="faint" style="margin:0">Paste what they said. The AI classifies it, moves the stage and drafts your answer.</p>' +
         '<label class="field" for="r-channel">Channel<select id="r-channel"><option>linkedin</option><option>email</option><option>whatsapp</option><option>phone</option><option>meeting</option></select></label>' +
         '<label class="field" for="r-msg">What they said<textarea id="r-msg" required></textarea></label>' +
         '<label class="field" for="r-notes">Your notes (optional)<input id="r-notes" type="text"></label>' +
         '<div><button class="btn primary" type="submit">Log reply</button></div></form>') +
+      '</div><div class="dtab" data-pane="edit"' + hid('edit') + '>' +
       assignPanel(c) +
       '<form class="panel section" id="edit-form"><h3>Edit details</h3><div class="form-grid">' +
       '<label class="field" for="e-title">Job title<input id="e-title" value="' + esc(c.job_title) + '"></label>' +
@@ -758,7 +831,7 @@
         (isDnc(c) || ['DECLINED', 'NOT_RELEVANT', 'IGNORED'].includes(c.status) ? act(c, 'reopen', 'Reopen relationship') : act(c, 'collab', 'Mark as collaboration', 'good') + act(c, 'dnc', 'Do not contact', 'ghost bad')) +
         (c.email && c.unsubscribed !== true ? act(c, 'unsub', 'Unsubscribe from email', 'ghost') : '') +
         (can('delete') ? '<button type="button" class="btn sm ghost bad" data-delete="' + esc(c.person_key) + '">Delete permanently</button>' : '') + '</div></div>' +
-      '</aside>';
+      '</div></aside>';
 
     const rf = $('#reply-form');
     if (rf) rf.addEventListener('submit', async (e) => {
@@ -795,15 +868,18 @@
   const CSV_COLS = ['full_name', 'linkedin_url', 'job_title', 'organization', 'email', 'campaign_code', 'city', 'profile_notes', 'phone'];
   function renderAdd() {
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
-    let h = topbar('Add people', 'Search LinkedIn as usual and press + Save (Chrome extension) next to anyone worth contacting. The AI fills in the details, scores them and drafts three connection notes.');
-    h += captureBlocks();
+    let h = topbar('Add people', 'Pick how you want to add people. Every new person is researched, scored and gets three connection notes from the AI.');
+    const M = S.addm || 'linkedin';
+    const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'Spreadsheet', 'Paste rows from Excel or Google Sheets']];
+    h += '<div class="methods" role="tablist">' + METHODS.map((x) => '<button type="button" role="tab" class="method' + (M === x[0] ? ' on' : '') + '" aria-selected="' + (M === x[0]) + '" data-addm="' + x[0] + '"><b>' + esc(x[1]) + '</b><span>' + esc(x[2]) + '</span></button>').join('') + '</div>';
+    h += captureBlocks(M);
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
     const terms = String(fc.keywords || fc.campaign_name || '').split(',').concat(String(fc.target_profile || '').split(','))
       .map((t) => t.trim()).filter((t) => t && t.length < 60);
     const uniq = terms.filter((t, i) => terms.findIndex((x) => x.toLowerCase() === t.toLowerCase()) === i).slice(0, 12);
     const F = S.find;
     const dl = (id, arr) => '<datalist id="' + id + '">' + arr.map((v) => '<option value="' + esc(v) + '">').join('') + '</datalist>';
-    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Find people on LinkedIn</h2><span class="faint">opens LinkedIn search in a new tab</span></div>' +
+    if (M === 'linkedin') h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Find people on LinkedIn</h2><span class="faint">opens LinkedIn search in a new tab</span></div>' +
       '<p class="muted" style="margin:0">Fill any of the boxes (type your own or pick a suggestion), optionally tap a topic, then press Search LinkedIn. On the results page, press <b>+ Save</b> (Chrome extension) next to anyone worth contacting.</p>' +
       '<div class="form-grid"><label class="field" for="find-camp">Campaign<select id="find-camp">' +
       campOptionsHtml(fc.campaign_code) + '</select></label>' +
@@ -816,7 +892,7 @@
       '<div class="actions" style="align-items:center"><a class="btn li" id="find-go" target="_blank" rel="noopener" href="' + esc(liSearch(findQuery())) + '">Search LinkedIn</a>' +
       '<span class="faint" id="find-preview">' + findPreview() + '</span>' +
       '<button type="button" class="btn sm ghost" id="find-clear">Clear</button></div></div>';
-    h += '<div class="grid-2"><form class="panel section" id="add-form"><h2>Add one person</h2><div class="form-grid">' +
+    if (M === 'one') h += '<form class="panel section" id="add-form" style="max-width:860px"><h2>Add one person</h2><div class="form-grid">' +
       '<label class="field" for="a-name">Full name<input id="a-name" required placeholder="Dr. Priya Sharma"></label>' +
       '<label class="field" for="a-li">LinkedIn profile URL<input id="a-li" required placeholder="https://www.linkedin.com/in/…"></label>' +
       '<label class="field" for="a-title">Job title<input id="a-title" placeholder="Associate Professor"></label>' +
@@ -829,13 +905,13 @@
       '<label class="field span" for="a-notes">Profile notes<textarea id="a-notes" style="min-height:120px" placeholder="Example:\nHeadline: Director, International Patient Services at XYZ Hospital\nAbout: 12 years in medical value travel; works with patients from Bangladesh and Africa\nRecent post: announced a new robotic surgery centre (Sept 2026)\nMet at: FICCI Heal 2026\nMy angle: they need a Bhubaneswar-side travel partner for patient families"></textarea></label>' + notesHelp() + '</div>' +
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
 
-    h += '<div class="panel section"><h2>Many at once</h2><p class="muted" style="margin:0">Paste CSV with a header row, or tab-separated rows copied from Excel or Google Sheets. Up to 200 per batch. Known columns:</p>' +
+    if (M === 'many') h += '<div class="panel section" style="max-width:860px"><h2>Paste rows from a spreadsheet</h2><p class="muted" style="margin:0">Paste CSV with a header row, or tab-separated rows copied from Excel or Google Sheets. Up to 200 per batch. Known columns:</p>' +
       '<div class="code-sample">' + CSV_COLS.join(',') + '</div>' +
       '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:140px" placeholder="full_name,linkedin_url,job_title,organization,email,campaign_code\nAmit Das,https://www.linkedin.com/in/amit-das,Founder,ABC Tours,,C003"></textarea></label>' +
       '<div class="actions"><button type="button" class="btn" id="bulk-parse">Preview</button><button type="button" class="btn primary" id="bulk-send"' + (S.bulkRows.length ? '' : ' disabled') + '>Send ' + (S.bulkRows.length || '') + ' for qualification</button></div>' +
       (S.bulkRows.length ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Org</th><th>Campaign</th><th>LinkedIn</th></tr></thead><tbody>' +
         S.bulkRows.slice(0, 200).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.campaign_code || 'C001') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '')) + '</td></tr>').join('') +
-        '</tbody></table></div>' : '') + '</div></div>';
+        '</tbody></table></div>' : '') + '</div>';
     h += '<p class="faint">Duplicates are skipped automatically: anyone whose LinkedIn URL is already in your contacts is ignored.</p>';
     return h;
   }
@@ -854,7 +930,7 @@
     const sel = selected || S.findCamp || ((campaigns()[0] || {}).campaign_code);
     return '<select id="' + id + '">' + campOptionsHtml(sel) + '</select>';
   }
-  function captureBlocks() {
+  function captureBlocks(M) {
     let h = '';
     if (S.captureDone) {
       h += '<div class="onboard"><h2>Added: ' + esc(S.captureDone) + '</h2><p class="muted" style="margin:0">The AI is scoring them and writing three connection notes. They appear in Today and Contacts in about a minute. You can close this tab and go back to LinkedIn; the next person you save opens here again.</p>' +
@@ -872,13 +948,13 @@
         (S.mode === 'demo' ? '<div class="banner"><span>Connect your access key in Settings first; then click the bookmark again on the profile.</span></div>' : '') +
         '<div class="actions"><button class="btn primary" type="submit"' + (S.mode === 'demo' ? ' disabled' : '') + '>Add and qualify</button><button class="btn ghost" type="button" id="cap-cancel">Discard</button></div></form>';
     }
-    h += '<form class="panel section" id="card-form"><div class="panel-head" style="margin:0"><h2>Scan business cards</h2><span class="faint">works on phone · photo of one or several visiting cards</span></div>' +
+    if (M === 'card') h += '<form class="panel section" id="card-form"><div class="panel-head" style="margin:0"><h2>Scan business cards</h2><span class="faint">works on phone · photo of one or several visiting cards</span></div>' +
       '<p class="muted" style="margin:0">Take a clear photo (or pick photos) of visiting cards from an event. The AI reads name, title, organisation, email, mobile and website, then scores each person like any other contact.</p>' +
       '<div class="form-grid"><label class="field" for="card-file">Photos<input id="card-file" type="file" accept="image/*" capture="environment" multiple required></label>' +
       '<label class="field" for="card-camp">Campaign' + campSelect('card-camp') + '</label>' +
       '<label class="field span" for="card-note">Where you met (optional, added to their notes)<input id="card-note" placeholder="e.g. Met at FICCI Heal 2026, Delhi"></label></div>' +
       '<div class="actions"><button class="btn primary" type="submit">Read cards and add</button><span class="faint" id="card-status"></span></div></form>';
-    h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Save from LinkedIn with the Chrome extension</h2><span class="faint">recommended · set up once on your computer</span></div>' +
+    if (M === 'linkedin') h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Save from LinkedIn with the Chrome extension</h2><span class="faint">recommended · set up once on your computer</span></div>' +
       '<p class="muted" style="margin:0">The extension adds a <b>+ Save</b> button next to every person in a LinkedIn people search, and a Save panel on every profile page. One click adds the person to the campaign you picked; the AI scores them and writes the notes.</p>' +
       '<ol class="steps"><li><a class="btn sm primary" href="relationship-engine-extension.zip" download>Download the extension (.zip)</a> and unzip it. You get a folder called <b>extension</b>.</li>' +
       '<li>In Chrome or Edge open <span class="mono">chrome://extensions</span> (Edge: <span class="mono">edge://extensions</span>) and switch on <b>Developer mode</b> (top right).</li>' +
@@ -889,7 +965,7 @@
       '<details><summary class="faint" style="cursor:pointer">No extension? Use the bookmark button instead</summary><ol class="steps"><li>Show your bookmarks bar (Ctrl+Shift+B).</li>' +
       '<li>Drag this button onto the bar: <a class="btn sm li" href="' + esc(BOOKMARKLET) + '" onclick="return false" title="Drag me to your bookmarks bar">Save to Relationship Engine</a>. If dragging does not work, right-click the bookmarks bar, choose Add page, name it Save to RE and paste the address from the box below as the URL.</li>' +
       '<li>Open a LinkedIn profile and click the bookmark.</li></ol><textarea readonly class="mono" style="min-height:70px;font-size:11px" onclick="this.select()">' + esc(BOOKMARKLET) + '</textarea></details></div>';
-    h += '<form class="panel section" id="paste-form"><div class="panel-head" style="margin:0"><h2>Or paste a profile</h2><span class="faint">works on phone too</span></div>' +
+    if (M === 'paste') h += '<form class="panel section" id="paste-form"><div class="panel-head" style="margin:0"><h2>Paste a profile</h2><span class="faint">works on phone too</span></div>' +
       '<p class="muted" style="margin:0">Open the profile, select all the text (Ctrl+A), copy it (Ctrl+C) and paste it below with the profile link. The AI works out the name, title and organisation.</p>' +
       '<div class="form-grid"><label class="field" for="p-url">LinkedIn profile URL<input id="p-url" required placeholder="https://www.linkedin.com/in/…"></label>' +
       '<label class="field" for="p-camp">Campaign' + campSelect('p-camp') + '</label>' +
@@ -1283,7 +1359,7 @@
     if (fresh) await loadBulk(true);
     const c = bkCamp(id); if (!c) return;
     const b = bkBucket(c.bucket_id); const mbs = String(c.mailboxes || b.mailboxes || '').split(',').filter(Boolean);
-    if (!confirm('Start sending "' + c.name + '"?\n\nTo: ' + (c.sendable || 0) + ' ready contacts in ' + (b.name || c.bucket_id) + '\nFrom: ' + mbs.map(mbLabel).join(', ') + '\nHours: ' + (c.send_window || '09:30-18:30|1-6') + ' IST\n\nEmails go out gradually within each mailbox\'s warm-up limit. You can pause at any time.')) return;
+    if (!await ask('Start sending "' + c.name + '"?\n\nTo: ' + (c.sendable || 0) + ' ready contacts in ' + (b.name || c.bucket_id) + '\nFrom: ' + mbs.map(mbLabel).join(', ') + '\nHours: ' + (c.send_window || '09:30-18:30|1-6') + ' IST\n\nEmails go out gradually within each mailbox\'s warm-up limit. You can pause at any time.')) return;
     try { const j = await bkPost(BULK_CAMP_API, 'status', { campaign_id: id, status: 'running' }); toast(j.message || 'Started.'); await loadBulk(true); } catch (er) { toast(er.message, true); }
   }
 
@@ -1330,7 +1406,7 @@
     if (a === 'back') { BK.detail = ''; render(); return; }
     if (a === 'sendsf') { BK.sends.filter = id; BK.sends.list = []; BK.sends.total = -1; render(); loadSends(); return; }
     if (a === 'start') { if (BK.edit && BK.edit.campaign_id === id) { await bkSave(true, t); return; } await bkStart(id); return; }
-    if (a === 'pause') { if (!confirm('Pause this campaign? Nothing more is sent until you resume.')) return; t.disabled = true; try { const j = await bkPost(BULK_CAMP_API, 'status', { campaign_id: id, status: 'paused' }); toast(j.message); await loadBulk(true); } catch (er) { toast(er.message, true); t.disabled = false; } return; }
+    if (a === 'pause') { if (!await ask('Pause this campaign? Nothing more is sent until you resume.')) return; t.disabled = true; try { const j = await bkPost(BULK_CAMP_API, 'status', { campaign_id: id, status: 'paused' }); toast(j.message); await loadBulk(true); } catch (er) { toast(er.message, true); t.disabled = false; } return; }
     if (a === 'ins') { const el = BK.lastField || $('#be-body'); if (!el) return; const s = el.selectionStart || el.value.length; el.value = el.value.slice(0, s) + id + el.value.slice(el.selectionEnd || s); el.focus(); el.setSelectionRange(s + id.length, s + id.length); bkCollect(); bkPreview(); return; }
     if (a === 'fuadd') { bkCollect(); BK.edit.followups.push({ days: 4, body: '' }); render(); return; }
     if (a === 'fudel') { bkCollect(); BK.edit.followups.splice(Number(id), 1); render(); return; }
@@ -1338,7 +1414,7 @@
     if (a === 'test') {
       bkCollect(); const to = $('#be-test-to').value; const step = Number($('#be-test-step').value) || 0;
       const p = bkPayload();
-      if (!confirm('Send a TEST of ' + (step ? 'follow-up ' + step : 'the first email') + ' to ' + to + '?\nIt uses a sample contact\'s details and is not counted in the campaign.')) return;
+      if (!await ask('Send a TEST of ' + (step ? 'follow-up ' + step : 'the first email') + ' to ' + to + '?\nIt uses a sample contact\'s details and is not counted in the campaign.')) return;
       t.disabled = true;
       try { const j = await bkPost(BULK_TEST_API, 'test', { to: to, step: step, row_key: (BK.sample[BK.sampleIdx] || {}).row_key || '', campaign: Object.assign({}, p, { mailboxes: p.mailboxes || bkBucket(p.bucket_id).mailboxes || '', followups: JSON.stringify(p.followups) }) }); toast(j.message || 'Test sent.'); } catch (er) { toast(er.message, true); } finally { t.disabled = false; }
       return;
@@ -1381,7 +1457,7 @@
   function renderLibrary() {
     const items = (S.data.content || []).slice().sort((a, b) => String(b.added_on || '').localeCompare(String(a.added_on || '')));
     const e = S.libEdit ? (items.find((x) => x.content_id === S.libEdit) || {}) : null;
-    let h = topbar('Content library', 'Papers, articles, itineraries, offers and events the AI may share in follow-ups. It only ever shares items from this list.', '<button class="btn primary" type="button" data-libedit="__new">Add item</button>');
+    let h = topbar('Campaigns', 'Papers, articles, itineraries, offers and events the AI may share in follow-ups. It only ever shares items from this list.', '<button class="btn primary" type="button" data-libedit="__new">Add item</button>');
     if (e) {
       h += '<form class="panel section" id="lib-form" data-id="' + esc(e.content_id || '') + '"><div class="panel-head" style="margin:0"><h2>' + (e.content_id ? 'Edit item' : 'Add item') + '</h2><button type="button" class="btn ghost" data-libedit="">Close</button></div><div class="form-grid">' +
         '<label class="field span" for="lf-title">Title<input id="lf-title" required value="' + esc(e.title || '') + '" placeholder="e.g. Our 2026 paper on patient trust in medical tourism"></label>' +
@@ -1501,23 +1577,29 @@
 
   function renderSettings() {
     const th = store.get('theme', 'system');
-    let h = topbar('Settings', 'Sign in, signatures, jobs and appearance.');
-    h += S.me ? whoLine() : '';
-    if (!S.sid) h += signInPanel();
+    const tabsList = [['account', 'Account']].concat(can('settings') ? [['signatures', 'Signatures']] : []).concat(can('run_jobs') ? [['automation', 'Automation']] : []).concat([['appearance', 'Appearance & help']]);
+    if (!tabsList.some((t) => t[0] === S.stab)) S.stab = 'account';
+    let h = withTabs(subTabs('stab', tabsList), () => topbar('Settings', 'Your sign-in, email signatures, background jobs and how the app looks.'));
+    if (S.stab === 'account') {
+      h += S.me ? whoLine() : '';
+      if (!S.sid) h += signInPanel();
     if (!S.me || S.me.role === 'owner') h += '<details class="section" style="max-width:640px"><summary class="faint" style="cursor:pointer">Owner access key (old way to connect, being retired)</summary>';
     if (!S.me || S.me.role === 'owner') h += '<form class="panel section" id="settings-form" style="max-width:640px"><h2>Connection</h2>' +
       '<label class="field" for="s-url">API address<input id="s-url" value="' + esc(S.apiUrl) + '" required></label>' +
       '<label class="field" for="s-key">Access key<input id="s-key" type="password" value="' + esc(S.key) + '" autocomplete="off" placeholder="Paste the key from the PRE-05 workflow"></label>' +
       '<p class="faint" style="margin:0">The key is kept only in this browser. The app code is public on GitHub; your contacts are not, because every request needs this key.</p>' +
       '<div class="actions"><button class="btn primary" type="submit">Save and connect</button>' + (S.key ? '<button class="btn bad" type="button" id="s-forget">Forget key on this device</button>' : '') + '</div></form></details>';
-    if (can('run_jobs')) h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
+    } else if (S.stab === 'signatures') {
+      h += sigPanelHtml();
+    } else if (S.stab === 'automation') {
+      h += '<div class="section"><div class="section-head"><h2>Run now</h2><span class="hint">Every job also runs on its own schedule. Results appear in a few minutes.</span></div><div class="runs">' +
       JOBS.map((j) => '<div class="panel"><b>' + esc(j[1]) + '</b><span class="faint" style="font-size:12.5px">' + esc(j[2]) + '</span><div><button type="button" class="btn sm primary" data-run="' + j[0] + '">Run</button></div></div>').join('') + '</div>' +
       '<p class="hint-line" style="margin-top:8px">Google Sheet mirror: <a href="' + SHEET_URL + '" target="_blank" rel="noopener">open the sheet</a>. Paste people into its Import tab (keep the header row) and they are added at the next sync.' + (S.data && S.data.suppressed ? ' · ' + S.data.suppressed + ' addresses on the email suppression list.' : '') + '</p></div>';
-    if (can('settings')) h += sigPanelHtml();
     if (S.mode === 'live' && (S.reconnect.scan || []).length) {
       h += '<div class="panel section" style="max-width:640px"><h2>Mailbox scan</h2><p class="faint" style="margin:0 0 8px">Every 20 minutes the engine reads a little further back in each mailbox (headers only, no email text), up to two years. New mail is picked up as it arrives.</p><div class="table-wrap"><table><thead><tr><th>Mailbox</th><th>Read back to</th><th>Messages</th></tr></thead><tbody>' +
         S.reconnect.scan.slice().sort((a, b) => String(a.mailbox).localeCompare(String(b.mailbox))).map((x) => '<tr><td>' + esc(MB_NAME[x.mailbox] || x.mailbox) + '</td><td>' + (x.done ? 'Done (2 years)' : esc(fmtDate(x.back_to))) + '</td><td>' + esc(x.seen) + '</td></tr>').join('') + '</tbody></table></div></div>';
     }
+    } else {
     h += '<div class="panel section" style="max-width:640px"><h2>Appearance</h2><label class="field" for="s-theme">Theme<select id="s-theme">' +
       ['system', 'light', 'dark'].map((t) => '<option value="' + t + '"' + (t === th ? ' selected' : '') + '>' + t[0].toUpperCase() + t.slice(1) + '</option>').join('') + '</select></label></div>';
     h += '<div class="panel section" style="max-width:640px"><h2>How it runs</h2><ul class="muted" style="margin:0;padding-left:18px">' +
@@ -1526,8 +1608,10 @@
       '<li>"Create Gmail draft" puts a draft in your Gmail. It never sends on its own.</li>' +
       '<li>Email is sent automatically only to verified or found addresses, never to anyone unsubscribed or marked do not contact, at most 30 a day, and always with an unsubscribe link.</li>' +
       '<li>Add or edit campaigns on the Campaigns tab.</li></ul></div>';
+    }
     return h;
   }
+
 
   // ---------- SIGN-IN & TEAM ----------
   const AUTH_API = 'https://n8n.assignover.in/webhook/pre-auth';
@@ -1697,8 +1781,8 @@
     if (a === 'approve' || a === 'reject') {
       const c = TM.pend.find((x) => x.campaign_id === id); if (!c) return;
       let note = '';
-      if (a === 'approve' && !confirm('Approve "' + c.name + '" and start sending to ' + (c.sendable || 0) + ' people?')) return;
-      if (a === 'reject') { const n = prompt('What should they change? (they see this note)', ''); if (n === null) return; note = n; }
+      if (a === 'approve' && !await ask('Approve "' + c.name + '" and start sending to ' + (c.sendable || 0) + ' people?')) return;
+      if (a === 'reject') { const n = await askText('What should they change? They see this note.'); if (n === null) return; note = n; }
       t.disabled = true;
       try { const j = await bkPost(BULK_CAMP_API, 'approve', { campaign_id: id, decision: a === 'approve' ? 'approve' : 'reject', note: note }); toast(j.message || 'Done.'); BK.loaded = false; await loadTeam(true); }
       catch (e) { toast(e.message, true); t.disabled = false; }
@@ -1716,19 +1800,102 @@
       '<div class="actions"><button class="btn" type="submit">Save assignment</button></div></form>';
   }
 
+  // ---------- in-app dialogs (replace the browser's confirm and prompt boxes) ----------
+  function dialog(message, withText) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div'); wrap.className = 'dlg-wrap';
+      const lines = String(message).split('\n');
+      wrap.innerHTML = '<div class="dlg" role="alertdialog" aria-modal="true"><div class="dlg-msg"><b>' + esc(lines[0]) + '</b>' + (lines.length > 1 ? '<div class="faint" style="white-space:pre-wrap;margin-top:6px">' + esc(lines.slice(1).join('\n').trim()) + '</div>' : '') + '</div>' +
+        (withText ? '<textarea class="dlg-in" style="min-height:80px"></textarea>' : '') +
+        '<div class="actions" style="justify-content:flex-end"><button type="button" class="btn ghost" data-dlg="0">Cancel</button><button type="button" class="btn primary" data-dlg="1">OK</button></div></div>';
+      document.body.appendChild(wrap);
+      const done = (ok) => { const v = withText ? wrap.querySelector('.dlg-in').value : true; wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(ok ? v : (withText ? null : false)); };
+      const onKey = (k) => { if (k.key === 'Escape') { k.stopPropagation(); done(false); } if (k.key === 'Enter' && !withText) { k.preventDefault(); done(true); } };
+      document.addEventListener('keydown', onKey, true);
+      wrap.addEventListener('click', (ev) => { const b = ev.target.closest('[data-dlg]'); if (b) done(b.getAttribute('data-dlg') === '1'); else if (ev.target === wrap) done(false); });
+      (wrap.querySelector('.dlg-in') || wrap.querySelector('[data-dlg="1"]')).focus();
+    });
+  }
+  const ask = (m) => dialog(m, false);
+  const askText = (m) => dialog(m, true);
+
+  // ---------- top bar: find any contact, sync state, help ----------
+  function mountAppBar() {
+    if ($('#appbar')) return;
+    const bar = document.createElement('div'); bar.id = 'appbar'; bar.className = 'appbar';
+    bar.innerHTML = '<div class="gs"><input id="gsearch" type="search" autocomplete="off" placeholder="Find a contact: name, organisation, email, phone" aria-label="Find a contact"><kbd class="gs-k">Ctrl K</kbd><div id="gsr" class="gsr" role="listbox" hidden></div></div>' +
+      '<span id="ab-sync" class="faint ab-sync"></span><button type="button" class="btn sm" id="ab-refresh" data-refresh>Refresh</button><button type="button" class="btn sm ghost ab-help" data-nav="guide" title="How it works" aria-label="How it works">?</button>';
+    const main = $('#main'); main.insertBefore(bar, main.firstChild);
+    const sheet = document.createElement('div'); sheet.id = 'more-sheet'; sheet.className = 'more-sheet'; sheet.hidden = true; document.body.appendChild(sheet);
+    sheet.addEventListener('click', (e) => { if (e.target === sheet) closeMore(); });
+    const inp = $('#gsearch'); const out = $('#gsr'); let sel = 0; let hits = [];
+    const draw = () => {
+      const q = inp.value.trim().toLowerCase();
+      if (!q || !S.data) { out.hidden = true; return; }
+      const digits = q.replace(/\D/g, '');
+      hits = S.data.contacts.filter((c) => [c.full_name, c.organization, c.email, c.job_title, c.city].join(' ').toLowerCase().includes(q) || (digits.length >= 4 && String(c.phone || '').replace(/\D/g, '').includes(digits))).slice(0, 8);
+      sel = 0;
+      out.innerHTML = hits.length ? hits.map((c, i) => '<button type="button" role="option" class="gsr-i' + (i === 0 ? ' on' : '') + '" data-gopen="' + esc(c.person_key) + '"><b>' + esc(c.full_name) + '</b><span class="faint">' + esc([c.job_title, c.organization].filter(Boolean).join(' · ')) + '</span>' + statusPill(c.status) + '</button>').join('')
+        : '<div class="gsr-none faint">Nobody in your list matches. <a href="' + esc(liSearch(inp.value)) + '" target="_blank" rel="noopener">Search LinkedIn</a></div>';
+      out.hidden = false;
+    };
+    const openHit = (k) => { inp.value = ''; out.hidden = true; inp.blur(); S.drawer = k; renderDrawer(); };
+    inp.addEventListener('input', draw);
+    inp.addEventListener('focus', draw);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (!hits.length) return; sel = (sel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length; out.querySelectorAll('.gsr-i').forEach((b, i) => b.classList.toggle('on', i === sel)); }
+      if (e.key === 'Enter' && hits[sel]) { e.preventDefault(); openHit(hits[sel].person_key); }
+      if (e.key === 'Escape') { inp.value = ''; out.hidden = true; inp.blur(); }
+    });
+    out.addEventListener('mousedown', (e) => { const b = e.target.closest('[data-gopen]'); if (b) { e.preventDefault(); openHit(b.getAttribute('data-gopen')); } });
+    inp.addEventListener('blur', () => setTimeout(() => { out.hidden = true; }, 150));
+    document.addEventListener('keydown', (e) => {
+      const typing = /^(input|textarea|select)$/i.test((e.target.tagName || '')) || e.target.isContentEditable;
+      if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') || (e.key === '/' && !typing)) { e.preventDefault(); inp.focus(); inp.select(); }
+    });
+    // remember which Today sections were folded
+    document.addEventListener('toggle', (e) => { const d = e.target; if (!d.matches || !d.matches('details[data-fold]')) return; FOLDS[d.getAttribute('data-fold')] = !d.open; store.set('folds', JSON.stringify(FOLDS)); }, true);
+  }
+  function toggleMore() { const m = $('#more-sheet'); if (!m) return; m.hidden = !m.hidden; }
+  function closeMore() { const m = $('#more-sheet'); if (m) m.hidden = true; }
+  try {
+    document.head.insertAdjacentHTML('beforeend', '<style>' +
+      '.nav-group{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:14px 12px 4px}.nav-group:first-child{padding-top:0}' +
+      '.appbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:-6px}.gs{position:relative;flex:1 1 320px;max-width:560px}.gs input{width:100%;padding-right:62px}' +
+      '.gs-k{position:absolute;right:10px;top:50%;transform:translateY(-50%);font:600 11px var(--font-mono,monospace);color:var(--ink-3);border:1px solid var(--line);border-radius:5px;padding:1px 5px;pointer-events:none}' +
+      '.gsr{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:60;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:4px;max-height:60vh;overflow:auto}' +
+      '.gsr-i{all:unset;box-sizing:border-box;cursor:pointer;display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border-radius:8px;font-size:13.5px}.gsr-i span.faint{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gsr-i.on,.gsr-i:hover{background:var(--accent-soft)}.gsr-none{padding:10px}' +
+      '.ab-sync{font-size:12px;margin-left:auto}.ab-help{font-weight:700;min-width:30px}' +
+      '.tiles{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}.tile{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:2px}' +
+      '.tile:hover{border-color:var(--accent)}.tile:focus-visible{outline:2px solid var(--accent)}.tile-n{font-family:var(--font-display);font-size:26px;font-weight:700;line-height:1.1}.tile-l{font-size:12.5px;color:var(--ink-2)}.tile.hot .tile-n{color:var(--saffron)}.tile.zero{opacity:.55}' +
+      'details.fold>summary{cursor:pointer;list-style:none}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary h2::before{content:"\\25BE";display:inline-block;width:18px;color:var(--ink-3);transition:transform .15s}details.fold:not([open])>summary h2::before{transform:rotate(-90deg)}details.fold[open]>summary{margin-bottom:12px}' +
+      '.fold-n{display:inline-block;font-size:12px;font-weight:700;min-width:20px;text-align:center;padding:1px 7px;border-radius:10px;background:var(--surface-2);color:var(--ink-2);vertical-align:middle}' +
+      '.subtabs{margin:-6px 0 4px}.subtabs .chip{font-size:13px;padding:7px 12px}' +
+      '.methods{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}.method{all:unset;box-sizing:border-box;cursor:pointer;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:3px}' +
+      '.method span{font-size:12.5px;color:var(--ink-3)}.method:hover{border-color:var(--accent)}.method.on{border:2px solid var(--accent);background:var(--accent-soft);padding:11px 13px}.method:focus-visible{outline:2px solid var(--accent)}' +
+      '.drawer .dhead{position:sticky;top:calc(-18px - env(safe-area-inset-top,0px));z-index:3;background:var(--bg);display:flex;flex-direction:column;gap:12px;padding:18px 0 10px;margin:-18px 0 0;border-bottom:1px solid var(--line)}.dtabs .chip{font-size:13px}.drawer .dtab{display:flex;flex-direction:column;gap:16px}.drawer .dtab[hidden]{display:none}' +
+      '.dlg-wrap{position:fixed;inset:0;z-index:90;background:rgba(10,18,24,.45);display:grid;place-items:center;padding:16px}.dlg{background:var(--surface);border-radius:12px;box-shadow:var(--shadow);padding:18px;width:min(460px,100%);display:flex;flex-direction:column;gap:14px}' +
+      '.more-sheet{position:fixed;inset:0;z-index:35;background:rgba(10,18,24,.35)}.more-panel{position:absolute;left:8px;right:8px;bottom:calc(64px + env(safe-area-inset-bottom,0px));background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:6px;display:flex;flex-direction:column}' +
+      '.more-panel button{all:unset;cursor:pointer;padding:12px 14px;border-radius:8px;font-weight:600}.more-panel button[aria-current="page"]{background:var(--accent-soft);color:var(--accent)}' +
+      '@media (max-width:1100px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.methods{grid-template-columns:repeat(3,minmax(0,1fr))}}' +
+      '@media (max-width:760px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.methods{grid-template-columns:repeat(2,minmax(0,1fr))}.ab-sync,.gs-k{display:none}.appbar{gap:8px}.gs{flex-basis:100%;order:-1}.mobile-nav{overflow:visible!important;grid-auto-flow:row!important;grid-template-columns:repeat(5,1fr)!important}}' +
+      '</style>');
+  } catch (e) { /* styles are optional */ }
+
   // ---------- render & events ----------
   function render() {
     renderChrome();
     const v = $('#view');
     if (!S.data) { v.innerHTML = '<div class="empty">Loading…</div>'; return; }
-    const views = { today: renderToday, pipeline: renderPipeline, contacts: renderContacts, campaigns: renderCampaigns, bulk: renderBulk, library: renderLibrary, add: renderAdd, guide: renderGuide, settings: renderSettings, team: renderTeam };
+    const views = { today: renderToday, inbox: renderInbox, contacts: renderContactsPage, campaigns: renderCampaignsPage, bulk: renderBulk, add: renderAdd, guide: renderGuide, settings: renderSettings, team: renderTeam };
     if (!viewAllowed(S.view)) S.view = 'today';
     v.innerHTML = (views[S.view] || renderToday)();
     renderDrawer();
     bindViewInputs();
     if (S.view === 'bulk') { bindBulk(); if (S.mode === 'live' && !BK.loaded && !BK.loading) loadBulk(); }
     if (S.view === 'team') { bindTeam(); if (S.mode === 'live' && !TM.loaded && !TM.loading) loadTeam(); }
-    if (S.view === 'settings' && !S.sid) mountGoogleButton();
+    if (S.view === 'settings' && S.stab === 'account' && !S.sid) mountGoogleButton();
+    closeMore();
   }
 
   function bindViewInputs() {
@@ -1849,8 +2016,11 @@
       });
       const fg = $('#s-forget');
       if (fg) fg.addEventListener('click', () => { store.del('key'); S.key = ''; S.error = ''; load(); toast('Key removed from this device.'); });
-      wireSigForm();
-      $('#s-theme').addEventListener('change', (e) => {
+    }
+    wireSigForm();
+    const stheme = $('#s-theme');
+    if (stheme) {
+      stheme.addEventListener('change', (e) => {
         const t = e.target.value; store.set('theme', t);
         if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
       });
@@ -1858,6 +2028,8 @@
   }
 
   function go(view) {
+    if (ALIAS[view]) { const a = ALIAS[view]; S[a[1]] = a[2]; view = a[0]; }
+    if (!ROUTES.includes(view)) view = 'today';
     S.view = view; S.drawer = null;
     try { history.replaceState(null, '', '#' + view); } catch (e) { location.hash = view; }
     render();
@@ -1865,17 +2037,28 @@
     window.scrollTo(0, 0);
   }
 
-  document.addEventListener('click', (e) => {
+  document.addEventListener('click', async (e) => {
+    const ui = e.target.closest('[data-subtab],[data-dtab],[data-addm],[data-go],[data-more]');
+    if (ui) {
+      if (ui.hasAttribute('data-more')) { toggleMore(); return; }
+      if (ui.hasAttribute('data-subtab')) { const [k, v] = ui.getAttribute('data-subtab').split(':'); S[k] = v; if (k === 'cptab') { S.campEdit = null; S.libEdit = null; } render(); return; }
+      if (ui.hasAttribute('data-addm')) { S.addm = ui.getAttribute('data-addm'); store.set('addm', S.addm); render(); return; }
+      if (ui.hasAttribute('data-dtab')) { S.dtab = ui.getAttribute('data-dtab'); document.querySelectorAll('.drawer [data-dtab]').forEach((b) => { const on = b.getAttribute('data-dtab') === S.dtab; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+        document.querySelectorAll('.drawer [data-pane]').forEach((p) => { p.hidden = p.getAttribute('data-pane') !== S.dtab; }); const d = $('.drawer'); if (d) d.scrollTop = 0; return; }
+      if (ui.hasAttribute('data-go')) { const g = ui.getAttribute('data-go');
+        if (g[0] === '#') { const el = document.querySelector(g); if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } return; }
+        const [v, tab] = g.split(':'); if (tab) S.ctab = tab; go(v); return; }
+    }
     const tm = e.target.closest('[data-tm],[data-signout]');
     if (tm) { e.preventDefault(); if (tm.hasAttribute('data-signout')) signOut(); else onTeamClick(tm); return; }
     const t = e.target.closest('[data-nav],[data-act],[data-copy],[data-open],[data-close],[data-refresh],[data-sort],[data-run],[data-campedit],[data-campfilter],[data-libedit],[data-libdel],[data-sendmail],[data-delete],[data-inboxreply],[data-inboxdone],[data-signew],[data-sigedit],[data-sigdel],[data-sigcancel],[data-rcdraft],[data-rcadd],[data-rcsnooze],[data-rcnever],[data-rcmore]');
     if (!t) return;
     if (t.hasAttribute('data-run')) { runJob(t.getAttribute('data-run'), t.getAttribute('data-camp') ? { campaign_code: t.getAttribute('data-camp'), limit: 12 } : {}, t); return; }
     if (t.hasAttribute('data-campedit')) { S.campEdit = t.getAttribute('data-campedit') || null; render(); window.scrollTo(0, 0); return; }
-    if (t.hasAttribute('data-campfilter')) { S.filters = { q: '', status: '', campaign: t.getAttribute('data-campfilter') }; go('contacts'); return; }
+    if (t.hasAttribute('data-campfilter')) { S.filters = { q: '', status: '', campaign: t.getAttribute('data-campfilter') }; S.ctab = 'list'; go('contacts'); return; }
     if (t.hasAttribute('data-libedit')) { S.libEdit = t.getAttribute('data-libedit') || null; if (S.libEdit === '__new') S.libEdit = '__new'; render(); window.scrollTo(0, 0); return; }
     if (t.hasAttribute('data-libdel')) {
-      const id = t.getAttribute('data-libdel'); if (!confirm('Delete this library item?')) return;
+      const id = t.getAttribute('data-libdel'); if (!await ask('Delete this library item?')) return;
       if (S.mode === 'demo') { S.data.content = S.data.content.filter((x) => x.content_id !== id); S.libEdit = null; render(); return; }
       api('content_delete', { content_id: id }).then((j) => { toast(j.message || 'Deleted.'); S.libEdit = null; return load(true); }).catch((er) => toast(er.message, true));
       return;
@@ -1885,7 +2068,7 @@
       const email = t.getAttribute('data-rcdraft') || t.getAttribute('data-rcadd') || t.getAttribute('data-rcsnooze') || t.getAttribute('data-rcnever');
       const r = (S.reconnect.list || []).find((x) => x.email === email); if (!r) return;
       const drop = () => { S.reconnect.list = S.reconnect.list.filter((x) => x.email !== email); S.reconnect.total = Math.max(0, S.reconnect.total - 1); render(); };
-      if (t.hasAttribute('data-rcnever') && !confirm('Remove ' + r.name + ' from the reconnect list for good? Nothing is deleted.')) return;
+      if (t.hasAttribute('data-rcnever') && !await ask('Remove ' + r.name + ' from the reconnect list for good? Nothing is deleted.')) return;
       t.disabled = true;
       if (t.hasAttribute('data-rcdraft')) {
         t.textContent = 'Writing…';
@@ -1903,7 +2086,7 @@
     if (t.hasAttribute('data-sigedit')) { const g = (S.sigs || []).find((x) => x.sig_id === t.getAttribute('data-sigedit')); if (g) { S.sigEdit = Object.assign({}, g); render(); const p = $('#sig-form'); if (p) p.scrollIntoView({ block: 'start' }); } return; }
     if (t.hasAttribute('data-sigdel')) {
       const g = (S.sigs || []).find((x) => x.sig_id === t.getAttribute('data-sigdel')); if (!g) return;
-      if (!confirm('Delete the signature "' + g.label + '"? Emails already sent are not affected.')) return;
+      if (!await ask('Delete the signature "' + g.label + '"? Emails already sent are not affected.')) return;
       t.disabled = true;
       inboxApi('sig_delete', { sig_id: g.sig_id }).then(() => { toast('Signature deleted.'); return loadSigs(); }).then(() => render()).catch((er) => { toast(er.message, true); t.disabled = false; });
       return;
@@ -1916,7 +2099,7 @@
       if (!body) { toast('Write your reply first.', true); if (ta) ta.focus(); return; }
       const ss = document.getElementById('ibs-' + id); const sigId = ss ? ss.value : '';
       const sigName = ss && ss.selectedIndex >= 0 ? ss.options[ss.selectedIndex].text : '';
-      if (!confirm('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?\nSignature: ' + sigName)) return;
+      if (!await ask('Send this reply to ' + m.from_email + ' from ' + (m.to_address || mbAddr(m.mailbox)) + '?\nSignature: ' + sigName)) return;
       t.disabled = true;
       inboxApi('reply', { person_key: m.person_key, gmail_id: id, thread_id: m.thread_id, header_id: m.header_id, mailbox: m.mailbox, to_address: m.to_address || '', signature_id: sigId, subject: m.subject, body: body })
         .then((j) => { toast(j.message || 'Sent.'); S.inbox = S.inbox.filter((x) => x.gmail_id !== id); delete S.threads[m.person_key]; render(); })
@@ -1929,7 +2112,7 @@
       const fsel = document.getElementById('d-from'); const mbox = fsel && S.drawer === c.person_key ? fsel.value : '';
       const dsig = document.getElementById('d-sig'); const sigId = dsig && S.drawer === c.person_key ? dsig.value : '';
       const sigName = dsig && dsig.selectedIndex >= 0 ? dsig.options[dsig.selectedIndex].text : '';
-      if (!confirm('Send this email now to ' + c.email + ' from ' + (mbox ? mbAddr(mbox) : (c.send_mailbox ? mbAddr(c.send_mailbox) + ' (or the address they last wrote to)' : 'the campaign\'s address')) + '?\nSignature: ' + sigName + '\nAn unsubscribe line is added at the bottom.')) return;
+      if (!await ask('Send this email now to ' + c.email + ' from ' + (mbox ? mbAddr(mbox) : (c.send_mailbox ? mbAddr(c.send_mailbox) + ' (or the address they last wrote to)' : 'the campaign\'s address')) + '?\nSignature: ' + sigName + '\nAn unsubscribe line is added at the bottom.')) return;
       if (S.mode === 'demo') { toast('Demo mode: nothing was sent.'); return; }
       t.disabled = true;
       api('send_email', { person_key: c.person_key, subject: c.pending_subject || '', body: c.pending_message || '', mailbox: mbox, from: mbox.includes('@') ? mbox : '', signature_id: sigId }).then((j) => { toast(j.message || 'Sent.'); delete S.threads[c.person_key]; return load(true); }).catch((er) => { toast(er.message, true); t.disabled = false; });
@@ -1937,7 +2120,7 @@
     }
     if (t.hasAttribute('data-delete')) {
       const c = contactByKey(t.getAttribute('data-delete')); if (!c) return;
-      if (!confirm('Delete ' + c.full_name + ' and all their details permanently? This cannot be undone.')) return;
+      if (!await ask('Delete ' + c.full_name + ' and all their details permanently? This cannot be undone.')) return;
       if (S.mode === 'demo') { S.data.contacts = S.data.contacts.filter((x) => x !== c); S.drawer = null; render(); return; }
       api('delete', { person_key: c.person_key }).then((j) => { toast(j.message || 'Deleted.'); S.drawer = null; return load(true); }).catch((er) => toast(er.message, true));
       return;
@@ -1967,7 +2150,9 @@
   });
 
   const initial = (location.hash || '').replace('#', '');
-  if (VIEWS.some((v) => v.id === initial)) S.view = initial;
+  S.hashGiven = !!initial;
+  if (ALIAS[initial]) { const a = ALIAS[initial]; S[a[1]] = a[2]; S.view = a[0]; } else if (ROUTES.includes(initial)) S.view = initial;
+  mountAppBar();
   load();
   setInterval(() => { if (S.mode === 'live' && document.visibilityState === 'visible' && !S.drawer && !(S.view === 'bulk' && (BK.edit || BK.imp || BK.bucketEdit))) { load(true); if (S.view === 'bulk') loadBulk(true); if (S.view === 'team') loadTeam(true); } }, 5 * 60 * 1000);
 })();
