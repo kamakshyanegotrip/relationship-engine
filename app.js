@@ -914,7 +914,7 @@
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
     let h = topbar('Add people', 'Pick how you want to add people. Every new person is researched, scored and gets three connection notes from the AI.');
     const M = S.addm || (window.matchMedia && matchMedia('(max-width: 760px)').matches ? 'card' : 'linkedin');
-    const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'CSV / Excel', 'Upload a CSV or Excel file, or paste rows']];
+    const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'CSV / Excel', 'Upload any sheet; columns are detected automatically']];
     h += '<div class="methods" role="tablist">' + METHODS.map((x) => '<button type="button" role="tab" class="method' + (M === x[0] ? ' on' : '') + '" aria-selected="' + (M === x[0]) + '" data-addm="' + x[0] + '"><b>' + esc(x[1]) + '</b><span>' + esc(x[2]) + '</span></button>').join('') + '</div>';
     h += captureBlocks(M);
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
@@ -949,16 +949,20 @@
       '<label class="field span" for="a-notes">Profile notes<textarea id="a-notes" style="min-height:120px" placeholder="Example:\nHeadline: Director, International Patient Services at XYZ Hospital\nAbout: 12 years in medical value travel; works with patients from Bangladesh and Africa\nRecent post: announced a new robotic surgery centre (Sept 2026)\nMet at: FICCI Heal 2026\nMy angle: they need a Bhubaneswar-side travel partner for patient families"></textarea></label>' + notesHelp() + '</div>' +
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
 
-    if (M === 'many') h += '<div class="panel section" style="max-width:860px"><h2>Upload a file or paste rows</h2><p class="muted" style="margin:0">Upload a CSV or Excel file (.csv, .xlsx, .xls), drop it on the box below, or paste rows copied from Excel or Google Sheets. The first row should be the column names. Common names like Name, Company, Designation, Mobile or LinkedIn are understood. Recognised columns:</p>' +
-      '<div class="code-sample">' + CSV_COLS.join(',') + '</div>' +
-      '<div class="cam-row"><label class="btn primary" for="bulk-file">Choose CSV or Excel file<input id="bulk-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv" hidden></label><a class="btn ghost" href="data:text/csv;charset=utf-8,' + encodeURIComponent(CSV_COLS.join(',') + '\nAmit Das,https://www.linkedin.com/in/amit-das,Founder,ABC Tours,amit@example.com,C001,Bhubaneswar,Met at OTM,+919800000000\n') + '" download="contacts-template.csv">Download template</a><span class="faint" id="bulk-fname">' + esc(S.bulkFile || '') + '</span></div>' +
-      '<label class="field" for="bulk-camp" style="max-width:420px">Campaign for rows that have no campaign_code' + campSelect('bulk-camp') + '</label>' +
-      '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:140px" placeholder="full_name,linkedin_url,job_title,organization,email,campaign_code\nAmit Das,https://www.linkedin.com/in/amit-das,Founder,ABC Tours,,C003"></textarea></label>' +
-      '<div class="actions"><button type="button" class="btn" id="bulk-parse">Preview</button><button type="button" class="btn primary" id="bulk-send"' + (S.bulkRows.length ? '' : ' disabled') + '>Send ' + (S.bulkRows.length || '') + ' for qualification</button>' + (S.bulkRows.length ? '<span class="faint">' + S.bulkRows.length + ' people found' + (S.bulkRows.length > 200 ? '; they go in batches of 200' : '') + '. Showing the first 200.</span>' : '') + '</div>' +
-      (S.bulkRows.length ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Org</th><th>Campaign</th><th>LinkedIn</th></tr></thead><tbody>' +
-        S.bulkRows.slice(0, 200).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.campaign_code ? campaignName(r.campaign_code) : 'chosen campaign') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '')) + '</td></tr>').join('') +
-        '</tbody></table></div>' : '') + '</div>';
-    h += '<p class="faint">Duplicates are skipped automatically: anyone whose LinkedIn URL is already in your contacts is ignored.</p>';
+    if (M === 'many') {
+      const n = S.bulkRows.length;
+      h += '<div class="panel section" style="max-width:900px"><h2>Upload any sheet or paste rows</h2><p class="muted" style="margin:0">Upload a CSV or Excel file in any layout: event attendee lists, directories, exports from other tools, your own sheets. The app works out which column is the name, company, title, email, phone, LinkedIn or city from the headings and the values themselves, even when the headings are missing, in a different order, or start a few rows down. You can check and correct the result before anything is added.</p>' +
+        '<div class="cam-row"><label class="btn primary" for="bulk-file">Choose CSV or Excel file<input id="bulk-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv" hidden></label><span class="faint">or drop it on the box below, or paste rows</span><span class="faint" id="bulk-fname">' + esc(S.bulkFile || '') + '</span></div>' +
+        '<label class="field" for="bulk-camp" style="max-width:420px">Campaign for these people' + campSelect('bulk-camp') + '</label>' +
+        '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:120px" placeholder="Paste rows copied from Excel or Google Sheets, in any column order"></textarea></label>' +
+        '<div class="actions"><button type="button" class="btn" id="bulk-parse">Read pasted rows</button><button type="button" class="btn primary" id="bulk-send"' + (n ? '' : ' disabled') + '>Send ' + (n || '') + ' for qualification</button>' +
+        (n || S.bulkSkipped ? '<span class="faint">' + n + ' people found' + (S.bulkSkipped ? ' · ' + S.bulkSkipped + ' rows skipped (no name, email or LinkedIn)' : '') + (n > 200 ? ' · sent in batches of 200' : '') + '</span>' : '') + '</div>' +
+        smMappingHtml(S.smart) +
+        (n ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Organisation</th><th>Email</th><th>Phone</th><th>LinkedIn</th></tr></thead><tbody>' +
+          S.bulkRows.slice(0, 100).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.email || '') + '</td><td class="num">' + esc(r.phone || '') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '').slice(0, 40)) + '</td></tr>').join('') +
+          '</tbody></table>' + (n > 100 ? '<div class="faint" style="padding:8px">Showing the first 100 of ' + n + '.</div>' : '') + '</div>' : '') + '</div>';
+    }
+    h += '<p class="faint">Duplicates are skipped automatically. Every new person is then researched and scored by the AI like any other contact.</p>';
     return h;
   }
 
@@ -2098,7 +2102,7 @@
   document.addEventListener('keydown', (e) => { if (!$('#cam-root')) return; if (e.key === 'Escape') { e.preventDefault(); closeCamera(); } if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); shoot(); } }, true);
   try {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
-      '#bulk-text.drop{outline:2px dashed var(--accent);background:var(--accent-soft)}.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
+      '.sm-map{border:1px solid var(--line);border-radius:var(--radius);padding:12px;background:var(--surface-2)}.sm-map select{min-width:170px}#bulk-text.drop{outline:2px dashed var(--accent);background:var(--accent-soft)}.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
       '.shot-strip{display:flex;gap:8px;flex-wrap:wrap}.shot-strip:empty{display:none}.shot{position:relative}.shot img{height:72px;border-radius:6px;border:1px solid var(--line);display:block}.shot-x{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);cursor:pointer;line-height:22px;padding:0}' +
       '.cam-wrap{position:fixed;inset:0;z-index:95;background:#000;display:flex;align-items:stretch;justify-content:center}.cam{display:flex;flex-direction:column;width:100%;max-width:900px;height:100%}' +
       '.cam-view{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.cam-view video{width:100%;height:100%;object-fit:contain;background:#000}' +
@@ -2135,6 +2139,128 @@
     if (btn) btn.disabled = false;
   }
   document.addEventListener('click', (e) => { const t = e.target.closest('[data-export]'); if (t) exportContacts(t.getAttribute('data-export'), t); });
+
+  // ---------- smart import: reads any sheet layout and works out which column is which ----------
+  const SM_FIELDS = [['full_name', 'Full name'], ['first_name', 'First name'], ['last_name', 'Last name'], ['job_title', 'Job title'], ['organization', 'Organisation'], ['email', 'Email'], ['phone', 'Phone / mobile'],
+    ['linkedin_url', 'LinkedIn'], ['website', 'Website'], ['city', 'City / location'], ['campaign_code', 'Campaign code'], ['notes', 'Keep in notes'], ['ignore', 'Ignore']];
+  const SM_HEAD = [
+    ['email', /e-?mail|mail\s*id|email\s*address/i], ['linkedin_url', /linked\s*in/i], ['phone', /phone|mobile|\bmob\b|\bmob\.|\bcell\b|contact\s*(no|num)|\btel\b|\btel\.|telephone|whats\s*app|landline/i],
+    ['website', /website|web\s*site|\bweb\b|\burl\b|site/i], ['first_name', /first\s*name|given\s*name|fname/i], ['last_name', /last\s*name|surname|family\s*name|lname/i],
+    ['job_title', /desig|job\s*title|\btitle\b|position|\brole\b|\bpost\b|profile/i], ['organization', /company|organi[sz]ation|\borg\b|firm|business|hotel|agency|institut|university|college|hospital|employer|property|establishment/i],
+    ['city', /city|location|place|district|\btown\b|\bstate\b|region/i], ['campaign_code', /campaign/i], ['notes', /note|remark|comment|description|about|category|segment|type|source|event/i],
+    ['full_name', /\bname\b|full\s*name|person|contact\s*person|contact\s*name|owner|delegate|participant|attendee|member/i]];
+  const SM_RX = {
+    email: /[^\s@,;:<>()]+@[^\s@,;:<>()]+\.[a-z]{2,}/i, linkedin: /linkedin\.com\/(in|pub|company)\//i, url: /^(https?:\/\/|www\.)\S+$|^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|in|org|net|co|io|travel|edu|ac\.in|gov\.in)(\/\S*)?$/i,
+    org: /\b(pvt|private|ltd|limited|llp|inc|hotel|hotels|resort|resorts|tours?|travels?|holidays?|dmc|university|hospital|clinic|college|institute|group|services|company|enterprises?|agency|trust|foundation|associates|solutions|technologies|international)\b/i,
+    title: /\b(manager|director|founder|co-?founder|ceo|cfo|coo|cto|owner|proprietor|head|executive|officer|professor|lecturer|dean|gm|agm|dgm|md|partner|president|vice|consultant|coordinator|assistant|lead|sales|marketing|operations|chairman|secretary|associate|analyst|doctor|surgeon|principal|registrar|incharge|in-charge)\b/i };
+  const smClean = (v) => String(v === null || v === undefined ? '' : v).replace(/\s+/g, ' ').trim();
+  const smDigits = (v) => String(v).replace(/\D/g, '');
+  const isPhone = (v) => { const d = smDigits(v); return d.length >= 8 && d.length <= 15 && /^[\d+\-\s().\/,]+$/.test(String(v)) && !/^\d{4}-\d{2}-\d{2}/.test(v); };
+  const isName = (v) => /^((mr|mrs|ms|miss|dr|prof|shri|smt)\.?\s+)?[A-Za-z][A-Za-z.'\-]*(\s+[A-Za-z][A-Za-z.'\-]*){1,3}$/i.test(v) && !SM_RX.org.test(v) && !SM_RX.title.test(v);
+  function smGridFromText(text) {
+    text = String(text || '').replace(/^﻿/, '');
+    const first = text.split(/\r?\n/).slice(0, 10).join('\n');
+    const cnt = (ch) => (first.match(new RegExp(ch === '|' ? '\\|' : ch, 'g')) || []).length;
+    const sep = [['\t', cnt('\t')], [';', cnt(';')], [',', cnt(',')], ['|', cnt('|')]].sort((a, b) => b[1] - a[1])[0];
+    const d = sep[1] ? sep[0] : ',';
+    const rows = []; let row = []; let cur = ''; let q = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (q) { if (ch === '"' && text[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; continue; }
+      if (ch === '"' && cur === '') { q = true; continue; }
+      if (ch === d) { row.push(cur); cur = ''; continue; }
+      if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+    return rows.map((r) => r.map(smClean));
+  }
+  function smAnalyse(grid) {
+    grid = (grid || []).map((r) => (r || []).map(smClean)).filter((r) => r.some((c) => c));
+    if (!grid.length) return null;
+    const width = Math.max(...grid.slice(0, 200).map((r) => r.length));
+    const headScore = (cell) => { if (!cell || cell.length > 40 || SM_RX.email.test(cell) || isPhone(cell) || /^https?:/i.test(cell)) return null; const m = SM_HEAD.find((h) => h[1].test(cell)); return m ? m[0] : null; };
+    let headerRow = -1; let best = 0;
+    for (let i = 0; i < Math.min(15, grid.length); i++) { const n = grid[i].filter((c) => headScore(c)).length; if (n > best && n >= Math.min(2, grid[i].filter(Boolean).length)) { best = n; headerRow = i; } }
+    const dataStart = headerRow >= 0 ? headerRow + 1 : grid.findIndex((r) => r.filter(Boolean).length >= 2);
+    const data = grid.slice(Math.max(0, dataStart)).filter((r) => !(headerRow >= 0 && r.join('|') === grid[headerRow].join('|')));
+    const sample = data.slice(0, 80);
+    const cols = [];
+    for (let c = 0; c < width; c++) {
+      const vals = sample.map((r) => r[c] || '').filter(Boolean);
+      const header = headerRow >= 0 ? (grid[headerRow][c] || '') : '';
+      const share = (fn) => (vals.length ? vals.filter(fn).length / vals.length : 0);
+      const content = { email: share((v) => SM_RX.email.test(v)), linkedin_url: share((v) => SM_RX.linkedin.test(v)), website: share((v) => SM_RX.url.test(v) && !SM_RX.linkedin.test(v) && !SM_RX.email.test(v)),
+        phone: share(isPhone), full_name: share(isName), organization: share((v) => SM_RX.org.test(v)), job_title: share((v) => SM_RX.title.test(v) && v.split(' ').length <= 8),
+        campaign_code: share((v) => /^C\d{3}$/i.test(v)) };
+      const fromHead = headScore(header);
+      const score = {};
+      SM_FIELDS.forEach(([f]) => { score[f] = (fromHead === f ? 1.2 : 0) + (content[f] || 0); });
+      if (fromHead === 'full_name' && content.organization > 0.5) score.organization += 0.5;
+      cols.push({ idx: c, header, samples: vals.slice(0, 3), filled: vals.length, score, field: 'notes', allNum: vals.length > 0 && vals.every((v) => /^\d{1,5}\.?$/.test(v)) });
+    }
+    // give each field to the column that fits it best
+    const want = ['email', 'linkedin_url', 'phone', 'website', 'first_name', 'last_name', 'full_name', 'organization', 'job_title', 'city', 'campaign_code'];
+    const pairs = []; cols.forEach((col) => want.forEach((f) => { if (col.score[f] >= 0.5 && col.filled) pairs.push([col.score[f], col, f]); }));
+    pairs.sort((a, b) => b[0] - a[0]);
+    const usedF = new Set(); const usedC = new Set();
+    pairs.forEach(([, col, f]) => { if (usedF.has(f) || usedC.has(col.idx)) return; if (f === 'full_name' && (usedF.has('first_name'))) { /* first+last already form the name */ } col.field = f; usedF.add(f); usedC.add(col.idx); });
+    cols.forEach((col) => { if (!usedC.has(col.idx)) col.field = col.filled && !col.allNum ? 'notes' : 'ignore'; });
+    return { grid, headerRow, dataStart: Math.max(0, dataStart), cols, data };
+  }
+  function smRows(an, defaultCampaign) {
+    if (!an) return { rows: [], skipped: 0 };
+    const rows = []; let skipped = 0;
+    const title = (s) => s.replace(/[._\-]+/g, ' ').replace(/\d+/g, '').trim().replace(/\b\w/g, (m) => m.toUpperCase());
+    an.data.forEach((r) => {
+      const o = {}; const notes = [];
+      an.cols.forEach((col) => {
+        const v = smClean(r[col.idx]); if (!v || col.field === 'ignore') return;
+        const label = col.header || ('Column ' + (col.idx + 1));
+        if (col.field === 'notes') notes.push(label + ': ' + v);
+        else if (col.field === 'website') notes.push('Website: ' + v);
+        else if (col.field === 'email') { const m = v.match(SM_RX.email); if (m) o.email = m[0].toLowerCase(); else notes.push(label + ': ' + v); }
+        else if (col.field === 'linkedin_url') o.linkedin_url = /^https?:/i.test(v) ? v : 'https://' + v.replace(/^\/+/, '');
+        else if (col.field === 'campaign_code') { if (/^C\d{3}$/i.test(v)) o.campaign_code = v.toUpperCase(); }
+        else if (o[col.field]) o[col.field] += ' ' + v; else o[col.field] = v;
+      });
+      const all = r.join(' ');
+      if (!o.email) { const m = all.match(SM_RX.email); if (m) o.email = m[0].toLowerCase(); }
+      if (!o.linkedin_url) { const m = all.match(/https?:\/\/(www\.)?linkedin\.com\/(in|pub)\/[^\s,;]+/i); if (m) o.linkedin_url = m[0]; }
+      if (!o.full_name && (o.first_name || o.last_name)) o.full_name = [o.first_name, o.last_name].filter(Boolean).join(' ');
+      delete o.first_name; delete o.last_name;
+      if (!o.full_name && o.email) { const lp = o.email.split('@')[0]; if (/[a-z]{2,}[._][a-z]{2,}/i.test(lp)) o.full_name = title(lp); }
+      if (!o.full_name && o.organization && (o.email || o.phone)) { o.full_name = o.organization; notes.unshift('No person named in the sheet; this is the organisation\'s contact'); }
+      if (!o.full_name && !o.linkedin_url) { skipped++; return; }
+      if (notes.length) o.profile_notes = (o.profile_notes ? o.profile_notes + '; ' : '') + notes.join('; ').slice(0, 1500);
+      if (!o.campaign_code && defaultCampaign) o.campaign_code = defaultCampaign;
+      rows.push(o);
+    });
+    return { rows, skipped };
+  }
+  function smMappingHtml(an) {
+    if (!an) return '';
+    const shown = an.cols.filter((c) => c.filled);
+    return '<div class="sm-map"><h3 style="margin:0">What each column holds</h3><p class="hint-line" style="margin:2px 0 8px">Worked out from the column names and the values themselves' + (an.headerRow > 0 ? ' (the headings were found on row ' + (an.headerRow + 1) + ')' : an.headerRow < 0 ? ' (the file has no heading row)' : '') + '. Change any that look wrong; anything not matched is kept in the person\'s notes.</p>' +
+      '<div class="table-wrap"><table><thead><tr><th>Column</th><th>Examples</th><th>Goes to</th></tr></thead><tbody>' +
+      shown.map((c) => '<tr><td><b>' + esc(c.header || 'Column ' + (c.idx + 1)) + '</b></td><td class="faint">' + esc(c.samples.join(' · ').slice(0, 90)) + '</td><td><select data-smcol="' + c.idx + '" aria-label="Field for ' + esc(c.header || 'column ' + (c.idx + 1)) + '">' +
+        SM_FIELDS.map(([f, l]) => '<option value="' + f + '"' + (c.field === f ? ' selected' : '') + '>' + l + '</option>').join('') + '</select></td></tr>').join('') + '</tbody></table></div></div>';
+  }
+  function smApply(grid, name) {
+    const an = smAnalyse(grid);
+    S.smart = an; S.bulkFile = name || '';
+    const r = smRows(an, ''); S.bulkRows = r.rows; S.bulkSkipped = r.skipped;
+    return r;
+  }
+  document.addEventListener('change', (e) => {
+    const t = e.target.closest && e.target.closest('[data-smcol]'); if (!t || !S.smart) return;
+    const col = S.smart.cols.find((c) => c.idx === Number(t.getAttribute('data-smcol'))); if (!col) return;
+    const f = t.value;
+    if (!['notes', 'ignore'].includes(f)) S.smart.cols.forEach((c) => { if (c !== col && c.field === f) c.field = 'notes'; });
+    col.field = f;
+    const r = smRows(S.smart, ''); S.bulkRows = r.rows; S.bulkSkipped = r.skipped;
+    const txt = ($('#bulk-text') || {}).value || ''; render(); const ta = $('#bulk-text'); if (ta) ta.value = txt;
+  });
 
   // ---------- render & events ----------
   function render() {
@@ -2206,14 +2332,19 @@
       if (await sendProspects([p], af.querySelector('button[type=submit]'))) af.reset();
     });
     const bp = $('#bulk-parse');
-    const useText = (txt, name) => { S.bulkFile = name || ''; S.bulkRows = parseDelimited(txt); if (!S.bulkRows.length) toast('No rows with a name or LinkedIn URL found. Check the first row has column names.', true); else toast(S.bulkRows.length + ' people read from ' + (name || 'the file') + '. Check the preview, then send.'); render(); const ta = $('#bulk-text'); if (ta) ta.value = txt; };
+    const showResult = (r, name, txt) => { if (!r.rows.length) toast('Could not find any people in ' + (name || 'the rows') + '. Each person needs at least a name, an email or a LinkedIn link.', true); else toast(r.rows.length + ' people found in ' + (name || 'the rows') + '. Check the columns and the preview, then send.'); render(); const ta = $('#bulk-text'); if (ta && txt !== undefined) ta.value = txt; };
+    const useText = (txt, name) => showResult(smApply(smGridFromText(txt), name), name, txt);
     const readFile = async (fl) => {
       if (!fl) return;
       try {
         if (/\.(xlsx|xls)$/i.test(fl.name)) {
           if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the Excel reader. Save the sheet as CSV and upload that.')); document.head.appendChild(sc); });
           const wb = window.XLSX.read(await fl.arrayBuffer(), { type: 'array' });
-          useText(window.XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]], { blankrows: false }), fl.name + (wb.SheetNames.length > 1 ? ' (first sheet)' : ''));
+          // use the sheet that holds the most people
+          let bestSheet = null; let bestN = -1;
+          wb.SheetNames.forEach((nm) => { const g = window.XLSX.utils.sheet_to_json(wb.Sheets[nm], { header: 1, raw: false, defval: '' }); const k = smRows(smAnalyse(g), '').rows.length; if (k > bestN) { bestN = k; bestSheet = { nm, g }; } });
+          const label = fl.name + (wb.SheetNames.length > 1 ? ' (sheet "' + bestSheet.nm + '")' : '');
+          showResult(smApply(bestSheet.g, label), label, '');
         } else useText(await fl.text(), fl.name);
       } catch (er) { toast(er.message || 'Could not read that file.', true); }
     };
@@ -2223,15 +2354,14 @@
       btext.addEventListener('drop', (ev) => { ev.preventDefault(); btext.classList.remove('drop'); readFile(ev.dataTransfer.files && ev.dataTransfer.files[0]); }); }
     if (bp) {
       bp.addEventListener('click', () => {
-        const txt = $('#bulk-text').value; S.bulkRows = parseDelimited(txt);
-        if (!S.bulkRows.length) toast('No rows with a name or LinkedIn URL found.', true);
-        render(); $('#bulk-text').value = txt;
+        const txt = $('#bulk-text').value; if (!txt.trim()) { toast('Paste some rows first, or choose a file.', true); return; }
+        useText(txt, 'the pasted rows');
       });
       $('#bulk-send').addEventListener('click', async (e) => {
         const dc = ($('#bulk-camp') || {}).value || ''; if (dc) remember(dc);
         const all = S.bulkRows.map((r) => (r.campaign_code || !dc ? r : Object.assign({}, r, { campaign_code: dc }))); let ok = true;
         for (let i = 0; i < all.length && ok; i += 200) { e.target.textContent = 'Sending ' + Math.min(i + 200, all.length) + ' of ' + all.length + '…'; ok = await sendProspects(all.slice(i, i + 200), e.target); }
-        if (ok) { S.bulkRows = []; S.bulkFile = ''; render(); }
+        if (ok) { S.bulkRows = []; S.bulkFile = ''; S.smart = null; S.bulkSkipped = 0; render(); }
       });
     }
     const cardf = $('#card-form');
