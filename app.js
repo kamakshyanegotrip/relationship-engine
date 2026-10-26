@@ -763,7 +763,9 @@
     const campOpts = campOptionsHtml(f.campaign, 'All campaigns');
     const th = (key, label, r) => '<th class="sortable' + (r ? ' r' : '') + '" data-sort="' + key + '">' + label + (col === key ? (dir > 0 ? ' ↑' : ' ↓') : '') + '</th>';
 
-    let h = topbar('Contacts', list.length + ' of ' + S.data.contacts.length + ' people in your list', '<button class="btn primary" type="button" data-nav="add">Add people</button>');
+    S.exportList = list;
+    const canExport = !S.me || can('export') || isOwnerMe();
+    let h = topbar('Contacts', list.length + ' of ' + S.data.contacts.length + ' people in your list', (canExport && list.length ? '<button class="btn" type="button" data-export="xlsx">Download Excel</button><button class="btn" type="button" data-export="csv">Download CSV</button>' : '') + '<button class="btn primary" type="button" data-nav="add">Add people</button>');
     if (!S.data.contacts.length) return h + onboardCard();
     h += '<div class="filters"><input id="f-q" type="search" placeholder="Search people in your list: name, organisation, email, city" value="' + esc(f.q) + '" aria-label="Search contacts">' +
       '<select id="f-status" aria-label="Filter by stage">' + statusOpts + '</select><select id="f-campaign" aria-label="Filter by campaign">' + campOpts + '</select></div>' +
@@ -912,7 +914,7 @@
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
     let h = topbar('Add people', 'Pick how you want to add people. Every new person is researched, scored and gets three connection notes from the AI.');
     const M = S.addm || (window.matchMedia && matchMedia('(max-width: 760px)').matches ? 'card' : 'linkedin');
-    const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'Spreadsheet', 'Paste rows from Excel or Google Sheets']];
+    const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'CSV / Excel', 'Upload a CSV or Excel file, or paste rows']];
     h += '<div class="methods" role="tablist">' + METHODS.map((x) => '<button type="button" role="tab" class="method' + (M === x[0] ? ' on' : '') + '" aria-selected="' + (M === x[0]) + '" data-addm="' + x[0] + '"><b>' + esc(x[1]) + '</b><span>' + esc(x[2]) + '</span></button>').join('') + '</div>';
     h += captureBlocks(M);
     const fc = campaigns().find((c) => c.campaign_code === S.findCamp) || campaigns()[0] || {};
@@ -947,12 +949,14 @@
       '<label class="field span" for="a-notes">Profile notes<textarea id="a-notes" style="min-height:120px" placeholder="Example:\nHeadline: Director, International Patient Services at XYZ Hospital\nAbout: 12 years in medical value travel; works with patients from Bangladesh and Africa\nRecent post: announced a new robotic surgery centre (Sept 2026)\nMet at: FICCI Heal 2026\nMy angle: they need a Bhubaneswar-side travel partner for patient families"></textarea></label>' + notesHelp() + '</div>' +
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
 
-    if (M === 'many') h += '<div class="panel section" style="max-width:860px"><h2>Paste rows from a spreadsheet</h2><p class="muted" style="margin:0">Paste CSV with a header row, or tab-separated rows copied from Excel or Google Sheets. Up to 200 per batch. Known columns:</p>' +
+    if (M === 'many') h += '<div class="panel section" style="max-width:860px"><h2>Upload a file or paste rows</h2><p class="muted" style="margin:0">Upload a CSV or Excel file (.csv, .xlsx, .xls), drop it on the box below, or paste rows copied from Excel or Google Sheets. The first row should be the column names. Common names like Name, Company, Designation, Mobile or LinkedIn are understood. Recognised columns:</p>' +
       '<div class="code-sample">' + CSV_COLS.join(',') + '</div>' +
+      '<div class="cam-row"><label class="btn primary" for="bulk-file">Choose CSV or Excel file<input id="bulk-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv" hidden></label><a class="btn ghost" href="data:text/csv;charset=utf-8,' + encodeURIComponent(CSV_COLS.join(',') + '\nAmit Das,https://www.linkedin.com/in/amit-das,Founder,ABC Tours,amit@example.com,C001,Bhubaneswar,Met at OTM,+919800000000\n') + '" download="contacts-template.csv">Download template</a><span class="faint" id="bulk-fname">' + esc(S.bulkFile || '') + '</span></div>' +
+      '<label class="field" for="bulk-camp" style="max-width:420px">Campaign for rows that have no campaign_code' + campSelect('bulk-camp') + '</label>' +
       '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:140px" placeholder="full_name,linkedin_url,job_title,organization,email,campaign_code\nAmit Das,https://www.linkedin.com/in/amit-das,Founder,ABC Tours,,C003"></textarea></label>' +
-      '<div class="actions"><button type="button" class="btn" id="bulk-parse">Preview</button><button type="button" class="btn primary" id="bulk-send"' + (S.bulkRows.length ? '' : ' disabled') + '>Send ' + (S.bulkRows.length || '') + ' for qualification</button></div>' +
+      '<div class="actions"><button type="button" class="btn" id="bulk-parse">Preview</button><button type="button" class="btn primary" id="bulk-send"' + (S.bulkRows.length ? '' : ' disabled') + '>Send ' + (S.bulkRows.length || '') + ' for qualification</button>' + (S.bulkRows.length ? '<span class="faint">' + S.bulkRows.length + ' people found' + (S.bulkRows.length > 200 ? '; they go in batches of 200' : '') + '. Showing the first 200.</span>' : '') + '</div>' +
       (S.bulkRows.length ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Org</th><th>Campaign</th><th>LinkedIn</th></tr></thead><tbody>' +
-        S.bulkRows.slice(0, 200).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.campaign_code || 'C001') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '')) + '</td></tr>').join('') +
+        S.bulkRows.slice(0, 200).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.campaign_code ? campaignName(r.campaign_code) : 'chosen campaign') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '')) + '</td></tr>').join('') +
         '</tbody></table></div>' : '') + '</div>';
     h += '<p class="faint">Duplicates are skipped automatically: anyone whose LinkedIn URL is already in your contacts is ignored.</p>';
     return h;
@@ -1032,7 +1036,15 @@
       }
       out.push(cur); return out.map((s) => s.trim());
     };
-    const head = split(lines[0]).map((h) => h.toLowerCase().replace(/[^a-z_]/g, '_'));
+    const ALIAS_COL = { name: 'full_name', full_name: 'full_name', fullname: 'full_name', contact_name: 'full_name', contact_person: 'full_name', person: 'full_name',
+      linkedin: 'linkedin_url', linkedin_url: 'linkedin_url', linkedin_profile: 'linkedin_url', profile_url: 'linkedin_url',
+      title: 'job_title', job_title: 'job_title', designation: 'job_title', position: 'job_title', role: 'job_title',
+      organization: 'organization', organisation: 'organization', company: 'organization', company_name: 'organization', firm: 'organization', hotel: 'organization', agency: 'organization',
+      email: 'email', e_mail: 'email', email_address: 'email', email_id: 'email', mail: 'email',
+      campaign: 'campaign_code', campaign_code: 'campaign_code', city: 'city', location: 'city', place: 'city',
+      notes: 'profile_notes', note: 'profile_notes', remarks: 'profile_notes', profile_notes: 'profile_notes',
+      phone: 'phone', mobile: 'phone', mobile_no: 'phone', mobile_number: 'phone', phone_number: 'phone', contact_no: 'phone', contact_number: 'phone', whatsapp: 'phone' };
+    const head = split(lines[0]).map((h) => { const k = h.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''); return ALIAS_COL[k] || k; });
     const hasHeader = head.some((h) => CSV_COLS.includes(h));
     const cols = hasHeader ? head : CSV_COLS;
     return (hasHeader ? lines.slice(1) : lines).map((l) => {
@@ -2086,7 +2098,7 @@
   document.addEventListener('keydown', (e) => { if (!$('#cam-root')) return; if (e.key === 'Escape') { e.preventDefault(); closeCamera(); } if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); shoot(); } }, true);
   try {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
-      '.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
+      '#bulk-text.drop{outline:2px dashed var(--accent);background:var(--accent-soft)}.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
       '.shot-strip{display:flex;gap:8px;flex-wrap:wrap}.shot-strip:empty{display:none}.shot{position:relative}.shot img{height:72px;border-radius:6px;border:1px solid var(--line);display:block}.shot-x{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);cursor:pointer;line-height:22px;padding:0}' +
       '.cam-wrap{position:fixed;inset:0;z-index:95;background:#000;display:flex;align-items:stretch;justify-content:center}.cam{display:flex;flex-direction:column;width:100%;max-width:900px;height:100%}' +
       '.cam-view{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.cam-view video{width:100%;height:100%;object-fit:contain;background:#000}' +
@@ -2097,6 +2109,32 @@
       '.cam-tip{color:#bbb;font-size:12.5px;text-align:center;margin:0;padding:0 16px 10px;background:#111}' +
       '</style>');
   } catch (e) { /* optional */ }
+
+  // ---------- export the contact list (respects the current search and filters) ----------
+  const EXPORT_COLS = [['full_name', 'Name'], ['job_title', 'Title'], ['organization', 'Organisation'], ['email', 'Email'], ['email_status', 'Email status'], ['phone', 'Phone'], ['city', 'City'], ['country', 'Country'], ['linkedin_url', 'LinkedIn'], ['organization_url', 'Website'],
+    ['campaign_code', 'Campaign code'], ['status', 'Stage'], ['track', 'Track'], ['priority', 'Priority'], ['priority_score', 'Score'], ['next_followup_date', 'Next touch'], ['last_contact_date', 'Last contact'], ['last_contact_summary', 'Last contact summary'], ['assigned_to', 'Assigned to'], ['source', 'Source'], ['added_on', 'Added on']];
+  async function exportContacts(kind, btn) {
+    const list = S.exportList || []; if (!list.length) { toast('Nothing to download.', true); return; }
+    const rows = list.map((c) => EXPORT_COLS.map(([k]) => (k === 'campaign_code' ? c[k] || '' : (c[k] === undefined || c[k] === null ? '' : c[k]))));
+    const head = EXPORT_COLS.map((x) => x[1]); const name = 'contacts-' + todayISO();
+    const save = (blob, fname) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); };
+    if (kind === 'csv') {
+      const q = (v) => { const t = String(v).replace(/\r?\n/g, ' '); return /[",]/.test(t) || /^[=+\-@]/.test(t) ? '"' + (/^[=+\-@]/.test(t) ? "'" : '') + t.replace(/"/g, '""') + '"' : t; };
+      save(new Blob(['﻿' + [head].concat(rows).map((r) => r.map(q).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }), name + '.csv');
+      toast(list.length + ' contacts downloaded as CSV.'); return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the Excel writer. Use Download CSV instead; Excel opens it too.')); document.head.appendChild(sc); });
+      const ws = window.XLSX.utils.aoa_to_sheet([head].concat(rows.map((r) => r.map((v) => (typeof v === 'string' && /^[=+\-@]/.test(v) ? "'" + v : v)))));
+      ws['!cols'] = head.map((h, i) => ({ wch: Math.min(40, Math.max(h.length, ...rows.slice(0, 200).map((r) => String(r[i]).length)) + 2) }));
+      const wb = window.XLSX.utils.book_new(); window.XLSX.utils.book_append_sheet(wb, ws, 'Contacts');
+      save(new Blob([window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name + '.xlsx');
+      toast(list.length + ' contacts downloaded as Excel.');
+    } catch (er) { toast(er.message, true); }
+    if (btn) btn.disabled = false;
+  }
+  document.addEventListener('click', (e) => { const t = e.target.closest('[data-export]'); if (t) exportContacts(t.getAttribute('data-export'), t); });
 
   // ---------- render & events ----------
   function render() {
@@ -2168,6 +2206,21 @@
       if (await sendProspects([p], af.querySelector('button[type=submit]'))) af.reset();
     });
     const bp = $('#bulk-parse');
+    const useText = (txt, name) => { S.bulkFile = name || ''; S.bulkRows = parseDelimited(txt); if (!S.bulkRows.length) toast('No rows with a name or LinkedIn URL found. Check the first row has column names.', true); else toast(S.bulkRows.length + ' people read from ' + (name || 'the file') + '. Check the preview, then send.'); render(); const ta = $('#bulk-text'); if (ta) ta.value = txt; };
+    const readFile = async (fl) => {
+      if (!fl) return;
+      try {
+        if (/\.(xlsx|xls)$/i.test(fl.name)) {
+          if (!window.XLSX) await new Promise((res, rej) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = res; sc.onerror = () => rej(new Error('Could not load the Excel reader. Save the sheet as CSV and upload that.')); document.head.appendChild(sc); });
+          const wb = window.XLSX.read(await fl.arrayBuffer(), { type: 'array' });
+          useText(window.XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]], { blankrows: false }), fl.name + (wb.SheetNames.length > 1 ? ' (first sheet)' : ''));
+        } else useText(await fl.text(), fl.name);
+      } catch (er) { toast(er.message || 'Could not read that file.', true); }
+    };
+    const bfile = $('#bulk-file'); if (bfile) bfile.addEventListener('change', () => readFile(bfile.files && bfile.files[0]));
+    const btext = $('#bulk-text');
+    if (btext) { btext.addEventListener('dragover', (ev) => { ev.preventDefault(); btext.classList.add('drop'); }); btext.addEventListener('dragleave', () => btext.classList.remove('drop'));
+      btext.addEventListener('drop', (ev) => { ev.preventDefault(); btext.classList.remove('drop'); readFile(ev.dataTransfer.files && ev.dataTransfer.files[0]); }); }
     if (bp) {
       bp.addEventListener('click', () => {
         const txt = $('#bulk-text').value; S.bulkRows = parseDelimited(txt);
@@ -2175,7 +2228,10 @@
         render(); $('#bulk-text').value = txt;
       });
       $('#bulk-send').addEventListener('click', async (e) => {
-        if (await sendProspects(S.bulkRows.slice(0, 200), e.target)) { S.bulkRows = []; render(); }
+        const dc = ($('#bulk-camp') || {}).value || ''; if (dc) remember(dc);
+        const all = S.bulkRows.map((r) => (r.campaign_code || !dc ? r : Object.assign({}, r, { campaign_code: dc }))); let ok = true;
+        for (let i = 0; i < all.length && ok; i += 200) { e.target.textContent = 'Sending ' + Math.min(i + 200, all.length) + ' of ' + all.length + '…'; ok = await sendProspects(all.slice(i, i + 200), e.target); }
+        if (ok) { S.bulkRows = []; S.bulkFile = ''; render(); }
       });
     }
     const cardf = $('#card-form');
