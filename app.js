@@ -911,7 +911,7 @@
   function renderAdd() {
     const campOpts = campOptionsHtml(S.findCamp || ((campaigns()[0] || {}).campaign_code));
     let h = topbar('Add people', 'Pick how you want to add people. Every new person is researched, scored and gets three connection notes from the AI.');
-    const M = S.addm || 'linkedin';
+    const M = S.addm || (window.matchMedia && matchMedia('(max-width: 760px)').matches ? 'card' : 'linkedin');
     const METHODS = [['linkedin', 'From LinkedIn', 'Search LinkedIn and save with one click (Chrome extension)'], ['card', 'Scan business cards', 'Photo of visiting cards, works on the phone'], ['paste', 'Paste a profile', 'Copy a LinkedIn profile page and paste it'], ['one', 'One person', 'Type in the details yourself'], ['many', 'Spreadsheet', 'Paste rows from Excel or Google Sheets']];
     h += '<div class="methods" role="tablist">' + METHODS.map((x) => '<button type="button" role="tab" class="method' + (M === x[0] ? ' on' : '') + '" aria-selected="' + (M === x[0]) + '" data-addm="' + x[0] + '"><b>' + esc(x[1]) + '</b><span>' + esc(x[2]) + '</span></button>').join('') + '</div>';
     h += captureBlocks(M);
@@ -992,10 +992,13 @@
     }
     if (M === 'card') h += '<form class="panel section" id="card-form"><div class="panel-head" style="margin:0"><h2>Scan business cards</h2><span class="faint">works on phone · photo of one or several visiting cards</span></div>' +
       '<p class="muted" style="margin:0">Take a clear photo (or pick photos) of visiting cards from an event. The AI reads name, title, organisation, email, mobile and website, then scores each person like any other contact.</p>' +
-      '<div class="form-grid"><label class="field" for="card-file">Photos<input id="card-file" type="file" accept="image/*" capture="environment" multiple required></label>' +
+      '<div class="cam-row"><button type="button" class="btn primary" data-cam="open">Open camera</button><span class="faint">or</span><label class="btn" for="card-file">Choose photos<input id="card-file" type="file" accept="image/*" multiple hidden></label><span class="faint" id="card-count">' + cardCountText() + '</span></div>' +
+      '<div class="shot-strip" id="shot-strip">' + shotStripHtml() + '</div>' +
+      '<div class="form-grid">' +
       '<label class="field" for="card-camp">Campaign' + campSelect('card-camp') + '</label>' +
       '<label class="field span" for="card-note">Where you met (optional, added to their notes)<input id="card-note" placeholder="e.g. Met at FICCI Heal 2026, Delhi"></label></div>' +
-      '<div class="actions"><button class="btn primary" type="submit">Read cards and add</button><span class="faint" id="card-status"></span></div></form>';
+      '<div class="actions"><button class="btn primary" type="submit">Read cards and add</button><span class="faint" id="card-status"></span></div>' +
+      '<p class="hint-line" style="margin:0">Each card becomes a contact (checked for duplicates), and the contacts are copied to the <a href="' + SHEET_URL + '" target="_blank" rel="noopener">Google Sheet</a> at the next sync (every 6 hours).</p></form>';
     if (M === 'linkedin') h += '<div class="panel section"><div class="panel-head" style="margin:0"><h2>Save from LinkedIn with the Chrome extension</h2><span class="faint">recommended · set up once on your computer</span></div>' +
       '<p class="muted" style="margin:0">The extension adds a <b>+ Save</b> button next to every person in a LinkedIn people search, and a Save panel on every profile page. One click adds the person to the campaign you picked; the AI scores them and writes the notes.</p>' +
       '<ol class="steps"><li><a class="btn sm primary" href="relationship-engine-extension.zip" download>Download the extension (.zip)</a> and unzip it. You get a folder called <b>extension</b>.</li>' +
@@ -2043,6 +2046,58 @@
       '</style>');
   } catch (e) { /* optional */ }
 
+  // ---------- camera for business cards (phone back camera or laptop webcam) ----------
+  const CAM = { shots: [], stream: null };
+  function cardCountText() { const f = ($('#card-file') && $('#card-file').files) ? $('#card-file').files.length : 0; const n = CAM.shots.length + f; return n ? n + ' photo' + (n === 1 ? '' : 's') + ' ready' : ''; }
+  function shotStripHtml() { return CAM.shots.map((d, i) => '<div class="shot"><img alt="Card photo ' + (i + 1) + '" src="data:image/jpeg;base64,' + d + '"><button type="button" class="shot-x" data-shotdel="' + i + '" aria-label="Remove photo ' + (i + 1) + '">×</button></div>').join(''); }
+  function refreshShots() { const ss = $('#shot-strip'); if (ss) ss.innerHTML = shotStripHtml(); const cc = $('#card-count'); if (cc) cc.textContent = cardCountText(); const n = $('#cam-n'); if (n) n.textContent = CAM.shots.length; const th = $('#cam-thumbs'); if (th) th.innerHTML = CAM.shots.slice(-6).map((d) => '<img alt="" src="data:image/jpeg;base64,' + d + '">').join(''); }
+  async function openCamera() {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) { const f = $('#card-file'); if (f) { f.setAttribute('capture', 'environment'); f.click(); } return; }
+    const root = document.createElement('div'); root.id = 'cam-root'; root.className = 'cam-wrap';
+    root.innerHTML = '<div class="cam" role="dialog" aria-modal="true" aria-label="Camera"><div class="cam-view"><video id="cam-video" autoplay playsinline muted></video><div class="cam-frame"></div><div class="cam-msg" id="cam-msg">Starting camera…</div></div>' +
+      '<div class="cam-bar"><div class="cam-thumbs" id="cam-thumbs"></div><button type="button" class="cam-shutter" data-cam="shoot" aria-label="Take photo"></button><button type="button" class="btn" data-cam="done">Done · <span id="cam-n">' + CAM.shots.length + '</span></button></div>' +
+      '<p class="cam-tip">Fill the frame with one card (or a few side by side), hold steady, tap the round button. Take as many as you like, then Done.</p></div>';
+    document.body.appendChild(root); refreshShots();
+    try {
+      CAM.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      const v = $('#cam-video'); v.srcObject = CAM.stream; await v.play().catch(() => {});
+      const m = $('#cam-msg'); if (m) m.remove();
+    } catch (e) {
+      const m = $('#cam-msg'); if (m) m.innerHTML = 'The camera could not start (' + esc(e.name === 'NotAllowedError' ? 'permission was refused' : (e.message || e.name)) + '). Allow camera access for this site in the browser, or use Choose photos.';
+    }
+  }
+  function closeCamera() { if (CAM.stream) { CAM.stream.getTracks().forEach((t) => t.stop()); CAM.stream = null; } const r = $('#cam-root'); if (r) r.remove(); refreshShots(); }
+  function shoot() {
+    const v = $('#cam-video'); if (!v || !v.videoWidth) return;
+    const m = 1600; const sc = Math.min(1, m / Math.max(v.videoWidth, v.videoHeight));
+    const cv = document.createElement('canvas'); cv.width = Math.round(v.videoWidth * sc); cv.height = Math.round(v.videoHeight * sc);
+    cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+    CAM.shots.push(cv.toDataURL('image/jpeg', 0.85).split(',')[1]);
+    const w = $('.cam-view'); if (w) { w.classList.remove('flash'); void w.offsetWidth; w.classList.add('flash'); }
+    if (navigator.vibrate) navigator.vibrate(30);
+    refreshShots();
+  }
+  document.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-cam],[data-shotdel]'); if (!t) return;
+    if (t.hasAttribute('data-shotdel')) { CAM.shots.splice(Number(t.getAttribute('data-shotdel')), 1); refreshShots(); return; }
+    const a = t.getAttribute('data-cam');
+    if (a === 'open') openCamera(); else if (a === 'shoot') shoot(); else if (a === 'done') closeCamera();
+  });
+  document.addEventListener('keydown', (e) => { if (!$('#cam-root')) return; if (e.key === 'Escape') { e.preventDefault(); closeCamera(); } if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); shoot(); } }, true);
+  try {
+    document.head.insertAdjacentHTML('beforeend', '<style>' +
+      '.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
+      '.shot-strip{display:flex;gap:8px;flex-wrap:wrap}.shot-strip:empty{display:none}.shot{position:relative}.shot img{height:72px;border-radius:6px;border:1px solid var(--line);display:block}.shot-x{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);cursor:pointer;line-height:22px;padding:0}' +
+      '.cam-wrap{position:fixed;inset:0;z-index:95;background:#000;display:flex;align-items:stretch;justify-content:center}.cam{display:flex;flex-direction:column;width:100%;max-width:900px;height:100%}' +
+      '.cam-view{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.cam-view video{width:100%;height:100%;object-fit:contain;background:#000}' +
+      '.cam-frame{position:absolute;left:8%;right:8%;top:50%;transform:translateY(-50%);aspect-ratio:1.75/1;max-height:80%;border:2px dashed rgba(255,255,255,.6);border-radius:12px;pointer-events:none}.cam-msg{position:absolute;inset:auto 16px 16px;color:#fff;background:rgba(0,0,0,.6);padding:10px 12px;border-radius:8px;font-size:14px}' +
+      '.cam-view.flash::after{content:"";position:absolute;inset:0;background:#fff;animation:camflash .25s ease-out forwards}@keyframes camflash{from{opacity:.8}to{opacity:0}}' +
+      '.cam-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px calc(14px + env(safe-area-inset-bottom,0px));background:#111}.cam-thumbs{display:flex;gap:4px;min-width:90px;flex:1}.cam-thumbs img{height:40px;border-radius:4px}' +
+      '.cam-shutter{width:68px;height:68px;border-radius:50%;border:5px solid #fff;background:#fff;box-shadow:inset 0 0 0 3px #111;cursor:pointer;flex:none}.cam-shutter:active{transform:scale(.94)}.cam-bar .btn{flex:1;max-width:160px;justify-content:center}' +
+      '.cam-tip{color:#bbb;font-size:12.5px;text-align:center;margin:0;padding:0 16px 10px;background:#111}' +
+      '</style>');
+  } catch (e) { /* optional */ }
+
   // ---------- render & events ----------
   function render() {
     renderChrome();
@@ -2124,9 +2179,12 @@
       });
     }
     const cardf = $('#card-form');
+    const cfile = $('#card-file'); if (cfile) cfile.addEventListener('change', () => { const cc = $('#card-count'); if (cc) cc.textContent = cardCountText(); });
     if (cardf) cardf.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const files = [...($('#card-file').files || [])].slice(0, 10); if (!files.length) return;
+      const files = [...($('#card-file').files || [])].slice(0, 10);
+      const shots = CAM.shots.slice(0, 20);
+      if (!files.length && !shots.length) { toast('Take a photo with the camera or choose photos first.', true); return; }
       if (S.mode === 'demo') { toast('Demo mode: connect your key to scan real cards.'); return; }
       const camp = $('#card-camp').value; const note = $('#card-note').value.trim(); remember(camp);
       const b = cardf.querySelector('button[type=submit]'); const st = $('#card-status'); b.disabled = true;
@@ -2135,10 +2193,11 @@
           cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(url); res(cv.toDataURL('image/jpeg', 0.85).split(',')[1]); };
         img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not open ' + file.name)); }; img.src = url; });
       const done = [];
-      for (let i = 0; i < files.length; i++) {
-        st.textContent = 'Reading photo ' + (i + 1) + ' of ' + files.length + '…';
+      const jobs = shots.map((d) => () => Promise.resolve(d)).concat(files.map((f) => () => shrink(f)));
+      for (let i = 0; i < jobs.length; i++) {
+        st.textContent = 'Reading photo ' + (i + 1) + ' of ' + jobs.length + '…';
         try {
-          const image = await shrink(files[i]);
+          const image = await jobs[i]();
           const r = await fetch(CARD_API, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: 'data=' + encodeURIComponent(JSON.stringify({ ...cred(), op: 'card', payload: { image: image, mime: 'image/jpeg', campaign_code: camp, note: note } })) });
           let j = null; try { j = await r.json(); } catch (er) { j = null; }
           if (!r.ok || !j) throw new Error((j && j.message) || 'The scanner answered with status ' + r.status);
@@ -2146,6 +2205,7 @@
         } catch (er) { toast(er.message, true); }
       }
       st.textContent = done.length ? 'Done. New people appear in about a minute.' : ''; b.disabled = false; cardf.reset();
+      if (done.length) { CAM.shots = []; const ss = $('#shot-strip'); if (ss) ss.innerHTML = ''; const cc = $('#card-count'); if (cc) cc.textContent = ''; }
       setTimeout(() => load(true), 60000);
     });
     const cfm = $('#camp-form');
