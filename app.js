@@ -953,6 +953,8 @@
       const n = S.bulkRows.length;
       h += '<div class="panel section" style="max-width:900px"><h2>Upload any sheet or paste rows</h2><p class="muted" style="margin:0">Upload a CSV or Excel file in any layout: event attendee lists, directories, exports from other tools, your own sheets. The app works out which column is the name, company, title, email, phone, LinkedIn or city from the headings and the values themselves, even when the headings are missing, in a different order, or start a few rows down. You can check and correct the result before anything is added.</p>' +
         '<div class="cam-row"><label class="btn primary" for="bulk-file">Choose CSV or Excel file<input id="bulk-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv" hidden></label><span class="faint">or drop it on the box below, or paste rows</span><span class="faint" id="bulk-fname">' + esc(S.bulkFile || '') + '</span></div>' +
+        '<div class="gs-row"><label class="field" for="gs-url" style="flex:1;min-width:240px">Or read a Google Sheet<input id="gs-url" type="url" inputmode="url" placeholder="Paste the Google Sheets link (open the right tab first)" value="' + esc(store.get('gsurl', '')) + '"></label><button type="button" class="btn" id="gs-read">Read Google Sheet</button></div>' +
+        '<p class="hint-line" style="margin:-4px 0 0">Works straight away when the sheet is shared as "Anyone with the link can view". For a private sheet the app asks you to allow read-only access with your Google account; nothing in the sheet is changed.</p>' +
         '<label class="field" for="bulk-camp" style="max-width:420px">Campaign for these people' + campSelect('bulk-camp') + '</label>' +
         '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:120px" placeholder="Paste rows copied from Excel or Google Sheets, in any column order"></textarea></label>' +
         '<div class="actions"><button type="button" class="btn" id="bulk-parse">Read pasted rows</button><button type="button" class="btn primary" id="bulk-send"' + (n ? '' : ' disabled') + '>Send ' + (n || '') + ' for qualification</button>' +
@@ -2102,7 +2104,7 @@
   document.addEventListener('keydown', (e) => { if (!$('#cam-root')) return; if (e.key === 'Escape') { e.preventDefault(); closeCamera(); } if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); shoot(); } }, true);
   try {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
-      '.sm-map{border:1px solid var(--line);border-radius:var(--radius);padding:12px;background:var(--surface-2)}.sm-map select{min-width:170px}#bulk-text.drop{outline:2px dashed var(--accent);background:var(--accent-soft)}.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
+      '.gs-row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}.sm-map{border:1px solid var(--line);border-radius:var(--radius);padding:12px;background:var(--surface-2)}.sm-map select{min-width:170px}#bulk-text.drop{outline:2px dashed var(--accent);background:var(--accent-soft)}.cam-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.cam-row label.btn{cursor:pointer}' +
       '.shot-strip{display:flex;gap:8px;flex-wrap:wrap}.shot-strip:empty{display:none}.shot{position:relative}.shot img{height:72px;border-radius:6px;border:1px solid var(--line);display:block}.shot-x{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);cursor:pointer;line-height:22px;padding:0}' +
       '.cam-wrap{position:fixed;inset:0;z-index:95;background:#000;display:flex;align-items:stretch;justify-content:center}.cam{display:flex;flex-direction:column;width:100%;max-width:900px;height:100%}' +
       '.cam-view{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}.cam-view video{width:100%;height:100%;object-fit:contain;background:#000}' +
@@ -2262,6 +2264,46 @@
     const txt = ($('#bulk-text') || {}).value || ''; render(); const ta = $('#bulk-text'); if (ta) ta.value = txt;
   });
 
+  // ---------- read a Google Sheet by its link ----------
+  let gsToken = null; let gsTokenAt = 0;
+  async function gsAccessToken() {
+    if (gsToken && Date.now() - gsTokenAt < 50 * 60 * 1000) return gsToken;
+    await loadGsi();
+    if (!(window.google && google.accounts && google.accounts.oauth2)) throw new Error('Google sign-in could not load.');
+    return new Promise((res, rej) => {
+      const tc = google.accounts.oauth2.initTokenClient({ client_id: GOOGLE_CLIENT_ID, scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+        callback: (r) => { if (r && r.access_token) { gsToken = r.access_token; gsTokenAt = Date.now(); res(gsToken); } else rej(new Error('Google did not give access to the sheet.')); },
+        error_callback: (er) => rej(new Error(er && er.type === 'popup_closed' ? 'The Google window was closed before access was given.' : 'Google access was not given' + (er && er.type ? ' (' + er.type + ')' : '') + '.')) });
+      tc.requestAccessToken({ prompt: '' });
+    });
+  }
+  async function gsReadGrid(url) {
+    const m = String(url).match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]{20,})/); if (!m) throw new Error('That does not look like a Google Sheets link. Copy it from the browser address bar while the sheet is open.');
+    const id = m[1]; const gm = String(url).match(/[#&?]gid=(\d+)/); const gid = gm ? gm[1] : '';
+    // 1) sheets shared "anyone with the link": no sign-in needed
+    try {
+      const r = await fetch('https://docs.google.com/spreadsheets/d/' + id + '/gviz/tq?tqx=out:csv&headers=0' + (gid ? '&gid=' + gid : ''), { credentials: 'omit' });
+      const txt = r.ok ? await r.text() : '';
+      if (txt && !/^\s*<(!doctype|html)/i.test(txt)) return { grid: smGridFromText(txt), label: 'Google Sheet' };
+    } catch (e) { /* private sheet: fall through to read-only Google access */ }
+    // 2) private sheet: ask for read-only access with the user's Google account
+    const tok = await gsAccessToken();
+    const api = async (path) => { const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + path, { headers: { Authorization: 'Bearer ' + tok } }); const j = await r.json().catch(() => ({}));
+      if (!r.ok) { const msg = (j.error && j.error.message) || ('status ' + r.status); if (r.status === 403 && /has not been used|disabled/i.test(msg)) throw new Error('The Google Sheets API is not switched on for this app\'s Google Cloud project yet. Share the sheet as "Anyone with the link can view" instead, or ask Claude to switch the API on.'); if (r.status === 403 || r.status === 404) throw new Error('Your Google account cannot open this sheet. Check the link, or share the sheet with this account.'); if (r.status === 401) { gsToken = null; } throw new Error('Google Sheets said: ' + msg); }
+      return j; };
+    const meta = await api('?fields=properties.title,sheets.properties(sheetId,title)');
+    const tabs = (meta.sheets || []).map((x) => x.properties);
+    const pick = gid ? tabs.filter((t) => String(t.sheetId) === gid) : tabs;
+    let best = null; let bestN = -1;
+    for (const t of (pick.length ? pick : tabs).slice(0, 10)) {
+      const v = await api('/values/' + encodeURIComponent("'" + t.title.replace(/'/g, "''") + "'") + '?majorDimension=ROWS');
+      const g = v.values || []; const n = smRows(smAnalyse(g), '').rows.length;
+      if (n > bestN) { bestN = n; best = { g, label: (meta.properties && meta.properties.title ? meta.properties.title : 'Google Sheet') + ' · ' + t.title }; }
+    }
+    if (!best) throw new Error('The sheet has no tabs with data.');
+    return { grid: best.g, label: best.label };
+  }
+
   // ---------- render & events ----------
   function render() {
     renderChrome();
@@ -2348,6 +2390,14 @@
         } else useText(await fl.text(), fl.name);
       } catch (er) { toast(er.message || 'Could not read that file.', true); }
     };
+    const gsBtn = $('#gs-read');
+    if (gsBtn) gsBtn.addEventListener('click', async () => {
+      const url = ($('#gs-url').value || '').trim(); if (!url) { toast('Paste the Google Sheets link first.', true); return; }
+      store.set('gsurl', url); gsBtn.disabled = true; const was = gsBtn.textContent; gsBtn.textContent = 'Reading…';
+      try { const r = await gsReadGrid(url); showResult(smApply(r.grid, r.label), r.label, ''); }
+      catch (er) { toast(er.message || 'Could not read the sheet.', true); }
+      gsBtn.disabled = false; gsBtn.textContent = was;
+    });
     const bfile = $('#bulk-file'); if (bfile) bfile.addEventListener('change', () => readFile(bfile.files && bfile.files[0]));
     const btext = $('#bulk-text');
     if (btext) { btext.addEventListener('dragover', (ev) => { ev.preventDefault(); btext.classList.add('drop'); }); btext.addEventListener('dragleave', () => btext.classList.remove('drop'));
