@@ -950,18 +950,19 @@
       '<div><button class="btn primary" type="submit">Add and qualify</button></div></form>';
 
     if (M === 'many') {
-      const n = S.bulkRows.length;
+      const catHtml = S.bulkRows.length ? smCatHtml() : '';
+      const n = smSelectedRows().length;
       h += '<div class="panel section" style="max-width:900px"><h2>Upload any sheet or paste rows</h2><p class="muted" style="margin:0">Upload a CSV or Excel file in any layout: event attendee lists, directories, exports from other tools, your own sheets. The app works out which column is the name, company, title, email, phone, LinkedIn or city from the headings and the values themselves, even when the headings are missing, in a different order, or start a few rows down. You can check and correct the result before anything is added.</p>' +
         '<div class="cam-row"><label class="btn primary" for="bulk-file">Choose CSV or Excel file<input id="bulk-file" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,text/csv" hidden></label><span class="faint">or drop it on the box below, or paste rows</span><span class="faint" id="bulk-fname">' + esc(S.bulkFile || '') + '</span></div>' +
         '<div class="gs-row"><label class="field" for="gs-url" style="flex:1;min-width:240px">Or read a Google Sheet<input id="gs-url" type="url" inputmode="url" placeholder="Paste the Google Sheets link (open the right tab first)" value="' + esc(store.get('gsurl', '')) + '"></label><button type="button" class="btn" id="gs-read">Read Google Sheet</button></div>' +
         '<p class="hint-line" style="margin:-4px 0 0">Works straight away when the sheet is shared as "Anyone with the link can view". For a private sheet the app asks you to allow read-only access with your Google account; nothing in the sheet is changed.</p>' +
-        '<label class="field" for="bulk-camp" style="max-width:420px">Campaign for these people' + campSelect('bulk-camp') + '</label>' +
+        '<label class="field" for="bulk-camp" style="max-width:420px">' + (catHtml ? 'Campaign for anything not matched below' : 'Campaign for these people') + campSelect('bulk-camp') + '</label>' +
         '<label class="field" for="bulk-text">Rows<textarea id="bulk-text" style="min-height:120px" placeholder="Paste rows copied from Excel or Google Sheets, in any column order"></textarea></label>' +
         '<div class="actions"><button type="button" class="btn" id="bulk-parse">Read pasted rows</button><button type="button" class="btn primary" id="bulk-send"' + (n ? '' : ' disabled') + '>Send ' + (n || '') + ' for qualification</button>' +
-        (n || S.bulkSkipped ? '<span class="faint">' + n + ' people found' + (S.bulkSkipped ? ' · ' + S.bulkSkipped + ' rows skipped (no name, email or LinkedIn)' : '') + (n > 200 ? ' · sent in batches of 200' : '') + '</span>' : '') + '</div>' +
-        smMappingHtml(S.smart) +
-        (n ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Organisation</th><th>Email</th><th>Phone</th><th>LinkedIn</th></tr></thead><tbody>' +
-          S.bulkRows.slice(0, 100).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.email || '') + '</td><td class="num">' + esc(r.phone || '') + '</td><td class="mono">' + esc((r.linkedin_url || '').replace(/^https?:\/\/(www\.)?/, '').slice(0, 40)) + '</td></tr>').join('') +
+        (n || S.bulkSkipped ? '<span class="faint">' + n + ' people selected' + (S.bulkSkipped ? ' · ' + S.bulkSkipped + ' rows skipped (no name, email or LinkedIn)' : '') + (n > 200 ? ' · sent in batches of 200' : '') + '</span>' : '') + '</div>' +
+        smMappingHtml(S.smart) + catHtml +
+        (n ? '<div class="bulk-preview table-wrap"><table><thead><tr><th>Name</th><th>Title · Organisation</th><th>Email</th><th>Phone</th><th>Category → campaign</th></tr></thead><tbody>' +
+          smSelectedRows().slice(0, 100).map((r) => '<tr><td>' + esc(r.full_name) + '</td><td>' + esc([r.job_title, r.organization].filter(Boolean).join(' · ')) + '</td><td>' + esc(r.email || '') + '</td><td class="num">' + esc(r.phone || '') + '</td><td>' + esc((r._cat || 'Other') + ' → ' + (smCampOf(r, '') ? campaignName(smCampOf(r, '')) : 'campaign above')) + '</td></tr>').join('') +
           '</tbody></table>' + (n > 100 ? '<div class="faint" style="padding:8px">Showing the first 100 of ' + n + '.</div>' : '') + '</div>' : '') + '</div>';
     }
     h += '<p class="faint">Duplicates are skipped automatically. Every new person is then researched and scored by the AI like any other contact.</p>';
@@ -2144,12 +2145,12 @@
 
   // ---------- smart import: reads any sheet layout and works out which column is which ----------
   const SM_FIELDS = [['full_name', 'Full name'], ['first_name', 'First name'], ['last_name', 'Last name'], ['job_title', 'Job title'], ['organization', 'Organisation'], ['email', 'Email'], ['phone', 'Phone / mobile'],
-    ['linkedin_url', 'LinkedIn'], ['website', 'Website'], ['city', 'City / location'], ['campaign_code', 'Campaign code'], ['notes', 'Keep in notes'], ['ignore', 'Ignore']];
+    ['linkedin_url', 'LinkedIn'], ['website', 'Website'], ['city', 'City / location'], ['category', 'Category / type'], ['campaign_code', 'Campaign code'], ['notes', 'Keep in notes'], ['ignore', 'Ignore']];
   const SM_HEAD = [
     ['email', /e-?mail|mail\s*id|email\s*address/i], ['linkedin_url', /linked\s*in/i], ['phone', /phone|mobile|\bmob\b|\bmob\.|\bcell\b|contact\s*(no|num)|\btel\b|\btel\.|telephone|whats\s*app|landline/i],
     ['website', /website|web\s*site|\bweb\b|\burl\b|site/i], ['first_name', /first\s*name|given\s*name|fname/i], ['last_name', /last\s*name|surname|family\s*name|lname/i],
     ['job_title', /desig|job\s*title|\btitle\b|position|\brole\b|\bpost\b|profile/i], ['organization', /company|organi[sz]ation|\borg\b|firm|business|hotel|agency|institut|university|college|hospital|employer|property|establishment/i],
-    ['city', /city|location|place|district|\btown\b|\bstate\b|region/i], ['campaign_code', /campaign/i], ['notes', /note|remark|comment|description|about|category|segment|type|source|event/i],
+    ['city', /city|location|place|district|\btown\b|\bstate\b|region/i], ['campaign_code', /campaign/i], ['category', /categor|\btype\b|segment|classification|business\s*type|nature\s*of\s*business|\bgroup\b|\bkind\b|vertical|sector|industry/i], ['notes', /note|remark|comment|description|about|source|event/i],
     ['full_name', /\bname\b|full\s*name|person|contact\s*person|contact\s*name|owner|delegate|participant|attendee|member/i]];
   const SM_RX = {
     email: /[^\s@,;:<>()]+@[^\s@,;:<>()]+\.[a-z]{2,}/i, linkedin: /linkedin\.com\/(in|pub|company)\//i, url: /^(https?:\/\/|www\.)\S+$|^[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|in|org|net|co|io|travel|edu|ac\.in|gov\.in)(\/\S*)?$/i,
@@ -2194,7 +2195,8 @@
       const share = (fn) => (vals.length ? vals.filter(fn).length / vals.length : 0);
       const content = { email: share((v) => SM_RX.email.test(v)), linkedin_url: share((v) => SM_RX.linkedin.test(v)), website: share((v) => SM_RX.url.test(v) && !SM_RX.linkedin.test(v) && !SM_RX.email.test(v)),
         phone: share(isPhone), full_name: share(isName), organization: share((v) => SM_RX.org.test(v)), job_title: share((v) => SM_RX.title.test(v) && v.split(' ').length <= 8),
-        campaign_code: share((v) => /^C\d{3}$/i.test(v)) };
+        campaign_code: share((v) => /^C\d{3}$/i.test(v)),
+        category: (() => { if (vals.length < 4) return 0; const d = new Set(vals.map((v) => v.toLowerCase())); const shortText = share((v) => v.length <= 30 && !/\d{3,}|@/.test(v)); return d.size <= Math.max(2, Math.min(15, vals.length * 0.35)) && shortText > 0.9 ? 0.6 : 0; })() };
       const fromHead = headScore(header);
       const score = {};
       SM_FIELDS.forEach(([f]) => { score[f] = (fromHead === f ? 1.2 : 0) + (content[f] || 0); });
@@ -2202,7 +2204,7 @@
       cols.push({ idx: c, header, samples: vals.slice(0, 3), filled: vals.length, score, field: 'notes', allNum: vals.length > 0 && vals.every((v) => /^\d{1,5}\.?$/.test(v)) });
     }
     // give each field to the column that fits it best
-    const want = ['email', 'linkedin_url', 'phone', 'website', 'first_name', 'last_name', 'full_name', 'organization', 'job_title', 'city', 'campaign_code'];
+    const want = ['email', 'linkedin_url', 'phone', 'website', 'first_name', 'last_name', 'full_name', 'organization', 'job_title', 'category', 'city', 'campaign_code'];
     const pairs = []; cols.forEach((col) => want.forEach((f) => { if (col.score[f] >= 0.5 && col.filled) pairs.push([col.score[f], col, f]); }));
     pairs.sort((a, b) => b[0] - a[0]);
     const usedF = new Set(); const usedC = new Set();
@@ -2224,6 +2226,7 @@
         else if (col.field === 'email') { const m = v.match(SM_RX.email); if (m) o.email = m[0].toLowerCase(); else notes.push(label + ': ' + v); }
         else if (col.field === 'linkedin_url') o.linkedin_url = /^https?:/i.test(v) ? v : 'https://' + v.replace(/^\/+/, '');
         else if (col.field === 'campaign_code') { if (/^C\d{3}$/i.test(v)) o.campaign_code = v.toUpperCase(); }
+        else if (col.field === 'category') { o._cat = v.replace(/\s+/g, ' ').trim(); notes.push('Category: ' + o._cat); }
         else if (o[col.field]) o[col.field] += ' ' + v; else o[col.field] = v;
       });
       const all = r.join(' ');
@@ -2234,6 +2237,7 @@
       if (!o.full_name && o.email) { const lp = o.email.split('@')[0]; if (/[a-z]{2,}[._][a-z]{2,}/i.test(lp)) o.full_name = title(lp); }
       if (!o.full_name && o.organization && (o.email || o.phone)) { o.full_name = o.organization; notes.unshift('No person named in the sheet; this is the organisation\'s contact'); }
       if (!o.full_name && !o.linkedin_url) { skipped++; return; }
+      if (!o._cat && !an.cols.some((c) => c.field === 'category')) o._cat = smGuessType([o.organization, o.job_title, notes.join(' ')].join(' '));
       if (notes.length) o.profile_notes = (o.profile_notes ? o.profile_notes + '; ' : '') + notes.join('; ').slice(0, 1500);
       if (!o.campaign_code && defaultCampaign) o.campaign_code = defaultCampaign;
       rows.push(o);
@@ -2250,7 +2254,7 @@
   }
   function smApply(grid, name) {
     const an = smAnalyse(grid);
-    S.smart = an; S.bulkFile = name || '';
+    S.smart = an; S.bulkFile = name || ''; S.catMap = null;
     const r = smRows(an, ''); S.bulkRows = r.rows; S.bulkSkipped = r.skipped;
     return r;
   }
@@ -2260,7 +2264,7 @@
     const f = t.value;
     if (!['notes', 'ignore'].includes(f)) S.smart.cols.forEach((c) => { if (c !== col && c.field === f) c.field = 'notes'; });
     col.field = f;
-    const r = smRows(S.smart, ''); S.bulkRows = r.rows; S.bulkSkipped = r.skipped;
+    const r = smRows(S.smart, ''); S.bulkRows = r.rows; S.bulkSkipped = r.skipped; S.catMap = null;
     const txt = ($('#bulk-text') || {}).value || ''; render(); const ta = $('#bulk-text'); if (ta) ta.value = txt;
   });
 
@@ -2303,6 +2307,53 @@
     if (!best) throw new Error('The sheet has no tabs with data.');
     return { grid: best.g, label: best.label };
   }
+
+  // ---------- categories in an imported sheet: filter and file each group under a campaign ----------
+  function smGuessType(text) {
+    const t = String(text || '').toLowerCase();
+    if (/\bdmc\b|destination management|ground handl/.test(t)) return 'DMC';
+    if (/\bhotels?\b|\bresorts?\b|\binn\b|residency|palace|\bstays?\b|homestay|lodge|guest\s*house|\bvilla\b|suites|retreat/.test(t)) return 'Hotel';
+    if (/travel|tours?\b|holidays?|\btrips?\b|journeys|\bagent\b|agency|\bota\b|vacations|tourism/.test(t)) return 'Travel agent';
+    if (/hospital|clinic|health|medical/.test(t)) return 'Healthcare';
+    if (/universit|college|institute|school|academy|research/.test(t)) return 'Academic';
+    return 'Other';
+  }
+  function smCats() {
+    const m = {}; (S.bulkRows || []).forEach((r) => { const k = r._cat || 'Other'; m[k] = (m[k] || 0) + 1; }); return m;
+  }
+  function smCampFor(cat, fallback) {
+    const words = String(cat).toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 2 && !['and', 'the', 'other', 'others'].includes(w));
+    const alias = { agent: ['agent', 'travel', 'tour', 'b2b'], agents: ['agent', 'travel', 'tour', 'b2b'], hotel: ['hotel', 'hospitality', 'stay'], hotels: ['hotel', 'hospitality'], dmc: ['dmc', 'b2b', 'partner'], healthcare: ['medical', 'health', 'hospital'], academic: ['research', 'academic'] };
+    const keys = [...new Set(words.concat(...words.map((w) => alias[w] || [])))];
+    let best = null; let bestS = 0;
+    campaigns().forEach((c) => { const hay = [c.campaign_name, c.category, c.relationship_type, c.target_profile].join(' ').toLowerCase(); const sc = keys.filter((k) => hay.includes(k)).length + (words.some((w) => String(c.campaign_name || '').toLowerCase().includes(w)) ? 2 : 0); if (sc > bestS) { bestS = sc; best = c.campaign_code; } });
+    return best || fallback;
+  }
+  function smCatHtml() {
+    const cats = smCats(); const keys = Object.keys(cats).sort((a, b) => cats[b] - cats[a]);
+    if (!keys.length || (keys.length === 1 && keys[0] === 'Other')) return '';
+    S.catMap = S.catMap || {};
+    const dc = store.get('lastcamp', '') || ((campaigns()[0] || {}).campaign_code);
+    keys.forEach((k) => { if (!S.catMap[k]) S.catMap[k] = { on: true, camp: smCampFor(k, dc) }; });
+    const fromCol = S.smart && S.smart.cols.some((c) => c.field === 'category');
+    const sel = keys.filter((k) => S.catMap[k].on).reduce((a, k) => a + cats[k], 0);
+    return '<div class="sm-map"><h3 style="margin:0">Categories in this sheet</h3><p class="hint-line" style="margin:2px 0 8px">' + (fromCol ? 'Taken from the sheet\'s own category column.' : 'Worked out from the organisation names (hotel, travel agent, DMC and so on), because the sheet has no category column.') + ' Untick a category to leave it out, and choose which campaign each one is saved under. ' + sel + ' of ' + S.bulkRows.length + ' people selected.</p>' +
+      '<div class="table-wrap"><table><thead><tr><th>Import</th><th>Category</th><th>People</th><th>Save under campaign</th></tr></thead><tbody>' +
+      keys.map((k) => '<tr><td><input type="checkbox" data-catuse="' + esc(k) + '"' + (S.catMap[k].on ? ' checked' : '') + ' aria-label="Import ' + esc(k) + '"></td><td><b>' + esc(k) + '</b></td><td class="num">' + cats[k] + '</td><td><select data-catcamp="' + esc(k) + '" aria-label="Campaign for ' + esc(k) + '">' + campOptionsHtml(S.catMap[k].camp) + '</select></td></tr>').join('') +
+      '</tbody></table></div><div class="actions" style="margin-top:6px"><button type="button" class="btn sm ghost" data-catall="1">Select all</button><button type="button" class="btn sm ghost" data-catall="0">Select none</button></div></div>';
+  }
+  const smSelectedRows = () => (S.bulkRows || []).filter((r) => !S.catMap || !S.catMap[r._cat || 'Other'] || S.catMap[r._cat || 'Other'].on);
+  const smCampOf = (r, dc) => r.campaign_code || (S.catMap && S.catMap[r._cat || 'Other'] ? S.catMap[r._cat || 'Other'].camp : '') || dc;
+  document.addEventListener('change', (e) => {
+    const u = e.target.closest && e.target.closest('[data-catuse],[data-catcamp]'); if (!u || !S.catMap) return;
+    if (u.hasAttribute('data-catuse')) S.catMap[u.getAttribute('data-catuse')].on = u.checked; else S.catMap[u.getAttribute('data-catcamp')].camp = u.value;
+    const txt = ($('#bulk-text') || {}).value || ''; render(); const ta = $('#bulk-text'); if (ta) ta.value = txt;
+  });
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-catall]'); if (!b || !S.catMap) return;
+    Object.keys(S.catMap).forEach((k) => { S.catMap[k].on = b.getAttribute('data-catall') === '1'; });
+    const txt = ($('#bulk-text') || {}).value || ''; render(); const ta = $('#bulk-text'); if (ta) ta.value = txt;
+  });
 
   // ---------- render & events ----------
   function render() {
@@ -2409,9 +2460,10 @@
       });
       $('#bulk-send').addEventListener('click', async (e) => {
         const dc = ($('#bulk-camp') || {}).value || ''; if (dc) remember(dc);
-        const all = S.bulkRows.map((r) => (r.campaign_code || !dc ? r : Object.assign({}, r, { campaign_code: dc }))); let ok = true;
+        const all = smSelectedRows().map((r) => { const o = Object.assign({}, r, { campaign_code: smCampOf(r, dc) }); if (!o.campaign_code) delete o.campaign_code; delete o._cat; return o; }); let ok = true;
+        if (!all.length) { toast('No categories are selected.', true); return; }
         for (let i = 0; i < all.length && ok; i += 200) { e.target.textContent = 'Sending ' + Math.min(i + 200, all.length) + ' of ' + all.length + '…'; ok = await sendProspects(all.slice(i, i + 200), e.target); }
-        if (ok) { S.bulkRows = []; S.bulkFile = ''; S.smart = null; S.bulkSkipped = 0; render(); }
+        if (ok) { S.bulkRows = []; S.bulkFile = ''; S.smart = null; S.bulkSkipped = 0; S.catMap = null; render(); }
       });
     }
     const cardf = $('#card-form');
